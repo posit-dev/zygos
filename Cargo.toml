@@ -1,0 +1,39 @@
+[package]
+name = "dike"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+description = "Scale primitives for data visualization: values, ranges, transforms, and tick / break algorithms."
+license = "MIT"
+repository = "https://github.com/posit-dev/dike"
+keywords = ["visualization", "plotting", "scales"]
+categories = ["graphics", "visualization"]
+exclude = ["AGENTS.md"]
+
+# docs.rs builds default features only unless told otherwise, which would
+# hide the `geom-*` and datetime-interop items entirely.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+# Spatial-geometry parsers for `Geometry`. Each gate enables one of
+# `Geometry::from_wkt` / `from_wkb` / `from_geojson`. Hand-rolled and
+# dependency-free, so toggling them only affects what constructors compile,
+# not the dependency tree.
+geom-wkt = []
+geom-wkb = []
+geom-geojson = []
+# Optional datetime-library interop: `From` impls between the temporal
+# newtypes (`Date` / `DateTime` / `Time` / `Duration`) and the matching
+# types in the named library. All three default off — pick whichever
+# matches your downstream code's choice (or none, and convert by hand).
+chrono = ["dep:chrono"]
+time = ["dep:time"]
+jiff = ["dep:jiff"]
+
+[dependencies]
+peniko = "0.6"
+chrono = { version = "0.4", default-features = false, optional = true }
+time = { version = "0.3", default-features = false, optional = true }
+jiff = { version = "0.2", default-features = false, optional = true }
