@@ -1,0 +1,82 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt + clippy + build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry, git, and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-host-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-host-
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy --all-features
+        run: cargo clippy --all-features --all-targets -- -D warnings
+
+      # Pure std + peniko by default; this is the configuration consumers
+      # that disable default features get.
+      - name: cargo build --no-default-features
+        run: cargo build --no-default-features
+
+      # Each feature must stand on its own: `--all-features` builds them
+      # beside each other, which would hide one feature reaching for
+      # another's gated code.
+      - name: cargo check, one feature at a time
+        run: |
+          for feature in geom-wkt geom-wkb geom-geojson chrono time jiff; do
+            cargo check --no-default-features --features "$feature" --all-targets
+          done
+
+      - name: cargo test --all-features
+        run: cargo test --all-features
+
+  # The declared `rust-version`. The stable jobs above would not catch a
+  # newer language or std feature creeping in.
+  msrv:
+    name: MSRV (1.86, --all-features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.86
+        uses: dtolnay/rust-toolchain@1.86
+
+      - name: Cache cargo registry, git, and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-msrv-
+
+      - name: cargo check --all-features
+        run: cargo check --all-features

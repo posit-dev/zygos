@@ -4,7 +4,7 @@ Scales — value mappers. Map a domain `Value` to a visual output (panel fractio
 
 **Free functions, no traits.** Every algorithm in this crate is a plain free function over enum tags + POD config types — no `Arc<dyn>`, no `ScaleTypeTrait` / `TransformTrait`. Dispatch is `match` on `ScaleTypeKind` / `TransformKind`. Adding a new scale type or transform means extending the enum, writing a per-kind free function, and adding the new arm to each central match. Consumers have a closed, well-understood set of variants; runtime polymorphism via traits was overkill and added a layer of indirection across the crate boundary.
 
-**Leaf-crate convention.** This crate depends only on `std` and peniko (plus the optional datetime libraries behind their feature gates). It cannot name anything in hephaestus or ggsql — the crate boundary enforces what used to be a source-level lint. Consumers address it as `dike`; hephaestus re-exports it as `hephaestus::scales` and `hephaestus::color`.
+**Leaf-crate convention.** This crate depends only on `std` and peniko (plus the optional datetime libraries behind their feature gates). It cannot name anything in hephaestus or ggsql — the crate boundary enforces what used to be a source-level lint. Consumers address it as `zygos`; hephaestus re-exports it as `hephaestus::scales` and `hephaestus::color`.
 
 **No `Scale` aggregate here.** A `Scale` struct (bundle of scale_type + transform + direction + ranges + bin edges + break / minor-break specs + formatter + generation counter) belongs to the consumer — hephaestus's lives in its `src/plot/scale/mod.rs`. Consumers roll their own bundle and call the free functions directly; the bundle's methods are 1-line shims that match on the enum tags and delegate.
 
