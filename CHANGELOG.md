@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-05
+
 ### Added
 
 - `patterns` module (always compiled): the named shape and linetype
@@ -31,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `get_linetype_palette`, and `generate_linetype_sequential`.
 - `color::ramp`: multi-stop color interpolation with exact stop
   reproduction.
+- `oob`: `OobPolicy` (censor / keep / squish) for values outside a scale's
+  continuous domain.
+- `discrete_map_at` and `ordinal_map_at`: `discrete_map` / `ordinal_map`
+  with the domain scan already done. Callers with a cached value→index map
+  (e.g. a `Scale` bundle) skip the O(|domain|) scan per lookup.
+
+### Changed
+
+- **Breaking:** `LinetypeStep::Dash` / `Gap` lengths are now unitless
+  multiples of the line width (ggplot2 convention), documented as resolved
+  to pt/px by the consumer, rather than pt. A marker occupies one line
+  width of arc length.
 
 ### Fixed
 
@@ -42,12 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `continuous_breaks` / `continuous_minor_breaks` for `Asinh` and the
   baseless `PseudoLog` now place breaks on the base-10 1-2-5 pattern
   instead of powers of e, which labelled as 2.718….
-- `oob`: `OobPolicy` (censor / keep / squish) for values outside a scale's
-  continuous domain.
-
-- `discrete_map_at` and `ordinal_map_at`: `discrete_map` / `ordinal_map`
-  with the domain scan already done. Callers with a cached value→index map
-  (e.g. a `Scale` bundle) skip the O(|domain|) scan per lookup.
 
 ## [0.1.0] - 2026-11-04
 
@@ -80,6 +88,7 @@ as a standalone leaf crate.
   behind the `chrono`, `time`, and `jiff` features.
 - `Locale` as a tag carried alongside break labels.
 
-[Unreleased]: https://github.com/posit-dev/zygos/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/posit-dev/zygos/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/posit-dev/zygos/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/posit-dev/zygos/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/posit-dev/zygos/releases/tag/v0.1.0

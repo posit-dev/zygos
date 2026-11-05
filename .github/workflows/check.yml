@@ -49,7 +49,7 @@ jobs:
       # another's gated code.
       - name: cargo check, one feature at a time
         run: |
-          for feature in geom-wkt geom-wkb geom-geojson chrono time jiff; do
+          for feature in palettes geom-wkt geom-wkb geom-geojson chrono time jiff; do
             cargo check --no-default-features --features "$feature" --all-targets
           done
 
