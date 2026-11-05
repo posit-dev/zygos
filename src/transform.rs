@@ -187,10 +187,23 @@ pub fn expand_range_transformed_selective(
     let span = if span > 0.0 { span } else { 1.0 };
     let new_lo = t_lo - mult.0 * span - add.0;
     let new_hi = t_hi + mult.1 * span + add.1;
-    (
-        transform_inverse(new_lo, kind),
-        transform_inverse(new_hi, kind),
-    )
+    // An end whose pad leaves the transform's image inverts to a value
+    // folded back inside the range (sqrt padded below 0 comes back as a
+    // positive square) or to NaN (exp padded below a 0 output). Rather
+    // than return a limit that hides data, such an end is left unpadded.
+    let inv_lo = transform_inverse(new_lo, kind);
+    let inv_hi = transform_inverse(new_hi, kind);
+    let out_lo = if inv_lo.is_finite() && inv_lo <= lo {
+        inv_lo
+    } else {
+        lo
+    };
+    let out_hi = if inv_hi.is_finite() && inv_hi >= hi {
+        inv_hi
+    } else {
+        hi
+    };
+    (out_lo, out_hi)
 }
 
 /// The numeric domain on which this transform is defined.
@@ -389,11 +402,23 @@ mod tests {
 
     #[test]
     fn expand_sqrt_stays_on_valid_branch() {
-        // sqrt domain [0, 100] → transformed [0, 10]; 5% pad inverts to
-        // 0.25, not a negative lower bound.
+        // sqrt domain [0, 100] → transformed [0, 10]; a 5% pad would put
+        // the lower end at -0.5 in sqrt space, whose square (0.25) folds
+        // back inside the data range and hides the 0. The end stays put.
         let (lo, hi) = expand_range_transformed(0.0, 100.0, 0.05, 0.0, TransformKind::Sqrt);
-        approx(lo, 0.25, 1e-9);
+        approx(lo, 0.0, 1e-9);
         approx(hi, 110.25, 1e-6);
+    }
+
+    #[test]
+    fn expand_exp_never_returns_nan_or_folded_ends() {
+        // exp domain [-5, 3] → transformed [e^-5, e^3]; a 5% pad pushes the
+        // lower end below 0, where the inverse (log) is undefined. The end
+        // stays unpadded rather than returning NaN.
+        let (lo, hi) = expand_range_transformed(-5.0, 3.0, 0.05, 0.0, TransformKind::Exp);
+        assert!(lo.is_finite() && hi.is_finite());
+        approx(lo, -5.0, 1e-9);
+        assert!(hi > 3.0);
     }
 
     #[test]
