@@ -13,14 +13,16 @@ use std::sync::Arc;
 /// `key_hash` for the canonicalised diff-friendly comparison.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LinetypeStep {
-    /// Stroke a segment of this length (in pt) along the line, then
-    /// advance the cursor by the same amount.
+    /// Stroke a segment of this length along the line, then advance the
+    /// cursor by the same amount. Lengths are unitless multiples of the
+    /// line's width (ggplot2 convention); the consumer resolves them to
+    /// pt / px when it draws.
     Dash(f64),
     /// Stamp the named shape at the current cursor. The marker is
-    /// assumed to occupy `linewidth` pt of arc length so the next gap
+    /// assumed to occupy one line width of arc length so the next gap
     /// measures clear space starting from the marker's trailing edge.
     Marker(Arc<str>),
-    /// Advance the cursor by this many pt without drawing.
+    /// Advance the cursor by this many line widths without drawing.
     Gap(f64),
 }
 
