@@ -56,6 +56,7 @@ Rendering of axis and legend chrome lives in the consumer (hephaestus draws it i
 
 ## Conventions
 
+- **Finish every code-change task with `cargo fmt` and a clean `cargo clippy`.** Not after every edit — once, at the end of the task, before handing back. Clippy must pass with no warnings (CI runs `-D warnings --all-features --all-targets`, so use `cargo clippy --all-features --all-targets -- -D warnings`).
 - **Scales are stateless.** All configuration lives on `Scale`. No per-frame mutation.
 - **Temporal data projects to f64 before entering a scale.** Date → days, DateTime → microseconds, Time → nanoseconds since midnight, Duration → microseconds. The domain and ticks are always f64-based; axis label formatters reverse the projection.
 - **Break placement can differ from the data mapping.** Chrome positions ticks and gridlines with `Scale::map_break`, not `Scale::map`. The two agree for every family except Binned, whose `map` sends data to the centre of its bin while its breaks are the bin edges — those must land on their own domain fraction. A new scale type only needs a `map_break` arm when the same distinction applies.

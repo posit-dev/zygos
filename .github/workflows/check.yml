@@ -59,7 +59,7 @@ jobs:
   # The declared `rust-version`. The stable jobs above would not catch a
   # newer language or std feature creeping in.
   msrv:
-    name: MSRV (1.86, --all-features)
+    name: MSRV (1.86, core features)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -78,5 +78,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-msrv-
 
-      - name: cargo check --all-features
-        run: cargo check --all-features
+      # Default features only. The crate's MSRV is about the core; optional
+      # datetime-interop deps (time, jiff) carry their own, higher MSRVs,
+      # and gating a feature behind a newer rustc is acceptable — consumers
+      # on 1.86 just don't enable it.
+      - name: cargo check
+        run: cargo check --no-default-features --features palettes,geom-wkt,geom-wkb,geom-geojson

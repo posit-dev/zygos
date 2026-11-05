@@ -39,6 +39,9 @@ time = ["dep:time"]
 jiff = ["dep:jiff"]
 
 [dependencies]
+# The crate's MSRV (1.86) covers the core; the optional datetime-interop
+# dependencies carry their own, higher MSRVs (e.g. recent `time` needs
+# 1.88), so CI's MSRV job checks the core only.
 peniko = "0.6"
 chrono = { version = "0.4", default-features = false, optional = true }
 time = { version = "0.3", default-features = false, optional = true }

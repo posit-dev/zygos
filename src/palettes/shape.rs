@@ -60,7 +60,7 @@ pub fn get_shape_palette(name: &str) -> Option<&'static [&'static str]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::patterns::shape::{POINT_SHAPE_NAMES, builtin_shape};
+    use crate::patterns::shape::{builtin_shape, POINT_SHAPE_NAMES};
 
     #[test]
     fn test_get_shape_palette() {
