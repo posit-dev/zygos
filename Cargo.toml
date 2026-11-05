@@ -17,6 +17,12 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
+# Named palette tables plus shape and linetype definitions (`palette`,
+# `shape`, `linetype` modules). Carries ~50 256-entry color tables
+# (Crameri, viridis family, ColorBrewer), so it's off by default —
+# consumers that resolve palettes by name (e.g. ggsql) opt in; consumers
+# that don't (e.g. hephaestus) skip the ~300KB of static data.
+palettes = []
 # Spatial-geometry parsers for `Geometry`. Each gate enables one of
 # `Geometry::from_wkt` / `from_wkb` / `from_geojson`. Hand-rolled and
 # dependency-free, so toggling them only affects what constructors compile,
