@@ -65,6 +65,9 @@ pub mod input;
 mod linetype_step;
 pub mod locale;
 pub mod output;
+#[cfg(feature = "palettes")]
+pub mod palettes;
+pub mod patterns;
 pub mod scale_type;
 pub mod transform;
 pub mod value;
