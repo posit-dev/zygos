@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `auto_temporal_interval(min, max, unit, n)`: the `TemporalInterval`
+  `temporal_breaks_from_f64` picks for the same arguments, exposed so
+  consumers deriving minor breaks externally can subdivide the interval
+  the majors actually stepped by.
+- `integer_breaks` and `graticule_breaks`: integer-constrained evenly
+  spaced breaks (nice 1-2-5 steps ≥ 1, or exact linear spacing rounded
+  to integers), and lat/long graticule lines from a fixed step ladder
+  with ±90 / ±180 boundary inclusion. Moved from ggsql.
+- `Closed` (`Left` / `Right`) for binned scales: which side of a bin
+  owns an exact edge value.
+
+### Changed
+
+- **Breaking:** `binned_map` and `binned_band_width_at` take a `closed:
+  Closed` parameter. `Closed::Left` (the default) reproduces the
+  previous `[e_i, e_{i+1})` behaviour.
+- **Breaking:** `OobPolicy::apply` no longer passes NaN through under
+  every policy: `Censor` now drops NaN (`None`), while `Keep` and
+  `Squish` return `Some(NaN)` — matching `f64::clamp`.
+- `temporal_breaks_from_f64` is now re-exported at the crate root.
+
 ## [0.2.0] - 2026-11-05
 
 ### Added

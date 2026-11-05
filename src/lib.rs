@@ -38,11 +38,12 @@
 //!     continuous domain in transformed space so a log scale's expansion
 //!     can't escape the transform's domain.
 //!   - Tick selection: [`extended_breaks`] (Wilkinson), [`linear_breaks`],
-//!     [`log_pretty_breaks`], [`log_minor_breaks`], [`sqrt_breaks`],
-//!     [`symlog_breaks`], [`symlog_minor_breaks`],
-//!     [`linear_minor_breaks_between`].
+//!     [`integer_breaks`], [`graticule_breaks`], [`log_pretty_breaks`],
+//!     [`log_minor_breaks`], [`sqrt_breaks`], [`symlog_breaks`],
+//!     [`symlog_minor_breaks`], [`linear_minor_breaks_between`].
 //!   - Calendar arithmetic behind the temporal families:
-//!     [`pick_temporal_interval`], [`derive_minor_interval`],
+//!     [`pick_temporal_interval`], [`auto_temporal_interval`],
+//!     [`derive_minor_interval`],
 //!     [`smallest_calendar_unit`], and the `align_*_to_interval` /
 //!     `align_*_to_grid` / `advance_*` / `retreat_*` /
 //!     `temporal_breaks_*` families over [`Date`] / [`DateTime`] /
@@ -89,14 +90,14 @@ pub mod interop_time;
 pub use breaks::{
     advance_date_by_interval, advance_datetime_by_interval, advance_time_by_interval,
     align_date_to_grid, align_date_to_interval, align_datetime_to_grid, align_datetime_to_interval,
-    align_time_to_grid, align_time_to_interval, derive_minor_interval, extended_breaks,
-    linear_breaks, linear_minor_breaks_between, log_minor_breaks, log_pretty_breaks,
-    pick_temporal_interval, retreat_date_by_interval, retreat_datetime_by_interval,
-    retreat_time_by_interval, smallest_calendar_unit, sqrt_breaks, symlog_breaks,
-    symlog_minor_breaks, temporal_breaks_date, temporal_breaks_datetime, temporal_breaks_time,
-    temporal_minor_breaks_date, temporal_minor_breaks_datetime,
-    temporal_minor_breaks_from_f64_with_interval, temporal_minor_breaks_time, CalendarUnit,
-    TemporalInterval, DEFAULT_BREAK_COUNT,
+    align_time_to_grid, align_time_to_interval, auto_temporal_interval, derive_minor_interval,
+    extended_breaks, graticule_breaks, integer_breaks, linear_breaks, linear_minor_breaks_between,
+    log_minor_breaks, log_pretty_breaks, pick_temporal_interval, retreat_date_by_interval,
+    retreat_datetime_by_interval, retreat_time_by_interval, smallest_calendar_unit, sqrt_breaks,
+    symlog_breaks, symlog_minor_breaks, temporal_breaks_date, temporal_breaks_datetime,
+    temporal_breaks_from_f64, temporal_breaks_time, temporal_minor_breaks_date,
+    temporal_minor_breaks_datetime, temporal_minor_breaks_from_f64_with_interval,
+    temporal_minor_breaks_time, CalendarUnit, TemporalInterval, DEFAULT_BREAK_COUNT,
 };
 pub use chrome::{AxisSide, LegendSide};
 pub use direction::Direction;
@@ -110,7 +111,7 @@ pub use scale_type::{
     continuous_breaks, continuous_map, continuous_minor_breaks, discrete_band_width,
     discrete_breaks, discrete_map, discrete_map_at, identity_map, ordinal_map, ordinal_map_at,
     temporal_breaks, temporal_breaks_with_interval, temporal_minor_breaks,
-    temporal_minor_breaks_with_interval, wrap_temporal_value, ScaleTypeKind, TemporalUnit,
+    temporal_minor_breaks_with_interval, wrap_temporal_value, Closed, ScaleTypeKind, TemporalUnit,
 };
 pub use transform::{
     expand_range_transformed, expand_range_transformed_selective, transform_allowed_domain,

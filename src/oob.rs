@@ -35,16 +35,22 @@ impl OobPolicy {
     /// Apply the policy: returns None for censored out-of-range values,
     /// Some(clamped) for squish, Some(original) for keep.
     ///
-    /// Values exactly on `min` or `max` are in range. NaN passes through
-    /// as `Some(NaN)` under every policy.
+    /// Values exactly on `min` or `max` are in range. NaN follows the
+    /// policy rather than passing through unconditionally: censor drops
+    /// it (NaN is never within `[min, max]`), while keep and squish return
+    /// `Some(NaN)` — matching `f64::clamp`, which returns NaN unchanged.
+    ///
+    /// Requires `min <= max` (domains stay ascending; reversal is a
+    /// [`Direction`](crate::Direction), not a backwards domain).
     pub fn apply(self, value: f64, min: f64, max: f64) -> Option<f64> {
-        if value.is_nan() || (value >= min && value <= max) {
+        if value >= min && value <= max {
             return Some(value);
         }
         match self {
             Self::Censor => None,
             Self::Keep => Some(value),
-            Self::Squish => Some(if value < min { min } else { max }),
+            // f64::clamp keeps NaN as NaN.
+            Self::Squish => Some(value.clamp(min, max)),
         }
     }
 }
@@ -81,10 +87,13 @@ mod tests {
     }
 
     #[test]
-    fn nan_passes_through() {
-        for p in [OobPolicy::Censor, OobPolicy::Keep, OobPolicy::Squish] {
-            assert!(p.apply(f64::NAN, 0.0, 10.0).unwrap().is_nan());
-        }
+    fn nan_follows_the_policy() {
+        assert_eq!(OobPolicy::Censor.apply(f64::NAN, 0.0, 10.0), None);
+        assert!(OobPolicy::Keep.apply(f64::NAN, 0.0, 10.0).unwrap().is_nan());
+        assert!(OobPolicy::Squish
+            .apply(f64::NAN, 0.0, 10.0)
+            .unwrap()
+            .is_nan());
     }
 
     #[test]

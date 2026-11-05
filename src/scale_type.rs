@@ -495,6 +495,20 @@ pub fn discrete_band_width(input_range: Option<&InputRange>) -> f64 {
 
 // ─── Binned ──────────────────────────────────────────────────────────────────
 
+/// Which side of a bin is closed — which bin a value exactly on a bin
+/// edge belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Closed {
+    /// Bins are `[e_i, e_{i+1})`; the last bin is closed on both sides so
+    /// the top edge still lands in the final bin. This is the historical
+    /// behaviour.
+    #[default]
+    Left,
+    /// Bins are `(e_i, e_{i+1}]`; the first bin is closed on both sides
+    /// so the bottom edge still lands in the first bin.
+    Right,
+}
+
 /// Map a value through a binned scale. `bins` is the bin-edge list
 /// (strictly increasing, length ≥ 2); values outside the domain, and any
 /// input on a scale with no bins, return `Null`.
@@ -512,7 +526,8 @@ pub fn discrete_band_width(input_range: Option<&InputRange>) -> f64 {
 ///
 /// [`Direction::Reversed`] mirrors the bin: its centre lands the same
 /// distance from the far end of the panel, and its palette entry is
-/// counted from the far end of the range.
+/// counted from the far end of the range. `closed` picks which side of a
+/// bin owns an exact edge value (see [`Closed`]).
 pub fn binned_map(
     input: &Value,
     input_range: Option<&InputRange>,
@@ -520,6 +535,7 @@ pub fn binned_map(
     output_range: Option<&OutputRange>,
     color_space: ColorSpace,
     direction: Direction,
+    closed: Closed,
 ) -> Value {
     let v = match input.as_number() {
         Some(n) => n,
@@ -536,7 +552,7 @@ pub fn binned_map(
     if !v.is_finite() || v < d_min || v > d_max {
         return Value::Null;
     }
-    let bin = find_bin(v, edges);
+    let bin = find_bin(v, edges, closed);
     match output_range {
         None => {
             let span = d_max - d_min;
@@ -610,6 +626,7 @@ pub fn binned_band_width_at(
     input: &Value,
     input_range: Option<&InputRange>,
     bins: Option<&[f64]>,
+    closed: Closed,
 ) -> f64 {
     let v = match input.as_number() {
         Some(n) => n,
@@ -627,7 +644,7 @@ pub fn binned_band_width_at(
     if span <= 0.0 {
         return 0.0;
     }
-    let bin = find_bin(v, edges);
+    let bin = find_bin(v, edges, closed);
     (edges[bin + 1] - edges[bin]) / span
 }
 
@@ -713,20 +730,23 @@ fn lerp_f64(a: f64, b: f64, t: f64) -> f64 {
     a + t * (b - a)
 }
 
-/// Find the bin index whose `[edges[i], edges[i+1])` bracket contains
-/// `v`. The last bin is closed on both sides so values at the upper
-/// boundary still land in the final bin rather than falling off. Values
-/// outside the edge list clamp to the nearest bin, so an edge list
-/// narrower than the domain sends low values to the first bin rather
-/// than wrapping them round to the last.
-fn find_bin(v: f64, edges: &[f64]) -> usize {
+/// Find the bin index whose bracket contains `v`. With [`Closed::Left`]
+/// the brackets are `[edges[i], edges[i+1])` with the last bin closed on
+/// both sides; with [`Closed::Right`] they are `(edges[i], edges[i+1]]`
+/// with the first bin closed on both sides — either way a value exactly
+/// on an outer boundary lands in an end bin rather than falling off.
+/// Values outside the edge list clamp to the nearest bin, so an edge
+/// list narrower than the domain sends low values to the first bin
+/// rather than wrapping them round to the last.
+fn find_bin(v: f64, edges: &[f64], closed: Closed) -> usize {
     let n_bins = edges.len() - 1;
-    // Edges are strictly increasing, so the first edge greater than `v`
-    // bounds the containing bin.
-    edges
-        .partition_point(|e| *e <= v)
-        .saturating_sub(1)
-        .min(n_bins - 1)
+    // Edges are strictly increasing, so the first edge past `v` (per the
+    // closedness) bounds the containing bin.
+    let count = match closed {
+        Closed::Left => edges.partition_point(|e| *e <= v),
+        Closed::Right => edges.partition_point(|e| *e < v),
+    };
+    count.saturating_sub(1).min(n_bins - 1)
 }
 
 #[cfg(test)]
@@ -756,23 +776,36 @@ mod tests {
     }
 
     #[test]
-    fn find_bin_brackets_are_half_open_with_a_closed_top() {
+    fn find_bin_closed_left_brackets_are_half_open_with_a_closed_top() {
         let edges = [10.0, 20.0, 30.0];
-        assert_eq!(find_bin(10.0, &edges), 0);
-        assert_eq!(find_bin(15.0, &edges), 0);
-        assert_eq!(find_bin(20.0, &edges), 1);
-        assert_eq!(find_bin(25.0, &edges), 1);
+        assert_eq!(find_bin(10.0, &edges, Closed::Left), 0);
+        assert_eq!(find_bin(15.0, &edges, Closed::Left), 0);
+        assert_eq!(find_bin(20.0, &edges, Closed::Left), 1);
+        assert_eq!(find_bin(25.0, &edges, Closed::Left), 1);
         // The last bin is closed on both sides.
-        assert_eq!(find_bin(30.0, &edges), 1);
+        assert_eq!(find_bin(30.0, &edges, Closed::Left), 1);
+    }
+
+    #[test]
+    fn find_bin_closed_right_brackets_are_half_open_with_a_closed_bottom() {
+        let edges = [10.0, 20.0, 30.0];
+        // The first bin is closed on both sides.
+        assert_eq!(find_bin(10.0, &edges, Closed::Right), 0);
+        assert_eq!(find_bin(15.0, &edges, Closed::Right), 0);
+        assert_eq!(find_bin(20.0, &edges, Closed::Right), 0);
+        assert_eq!(find_bin(25.0, &edges, Closed::Right), 1);
+        assert_eq!(find_bin(30.0, &edges, Closed::Right), 1);
     }
 
     #[test]
     fn find_bin_clamps_outside_the_edge_list() {
         let edges = [10.0, 20.0, 30.0];
-        // Below the first edge belongs to the first bin, not the last.
-        assert_eq!(find_bin(5.0, &edges), 0);
-        assert_eq!(find_bin(-100.0, &edges), 0);
-        assert_eq!(find_bin(35.0, &edges), 1);
+        for closed in [Closed::Left, Closed::Right] {
+            // Below the first edge belongs to the first bin, not the last.
+            assert_eq!(find_bin(5.0, &edges, closed), 0);
+            assert_eq!(find_bin(-100.0, &edges, closed), 0);
+            assert_eq!(find_bin(35.0, &edges, closed), 1);
+        }
     }
 
     fn srgb() -> ColorSpace {
@@ -997,7 +1030,9 @@ mod tests {
             max: 100.0,
         };
         let edges = [0.0, 10.0, 50.0, 100.0];
-        let at = |v: f64| binned_band_width_at(&Value::Number(v), Some(&domain), Some(&edges));
+        let at = |v: f64| {
+            binned_band_width_at(&Value::Number(v), Some(&domain), Some(&edges), Closed::Left)
+        };
         assert!((at(5.0) - 0.1).abs() < 1e-12, "{}", at(5.0));
         assert!((at(20.0) - 0.4).abs() < 1e-12, "{}", at(20.0));
         assert!((at(60.0) - 0.5).abs() < 1e-12, "{}", at(60.0));
@@ -1013,15 +1048,20 @@ mod tests {
         };
         let edges = [0.0, 5.0, 10.0];
         assert_eq!(
-            binned_band_width_at(&cat("a"), Some(&domain), Some(&edges)),
+            binned_band_width_at(&cat("a"), Some(&domain), Some(&edges), Closed::Left),
             0.0
         );
         assert_eq!(
-            binned_band_width_at(&Value::Number(1.0), None, Some(&edges)),
+            binned_band_width_at(&Value::Number(1.0), None, Some(&edges), Closed::Left),
             0.0
         );
         assert_eq!(
-            binned_band_width_at(&Value::Number(1.0), Some(&domain), Some(&[3.0])),
+            binned_band_width_at(
+                &Value::Number(1.0),
+                Some(&domain),
+                Some(&[3.0]),
+                Closed::Left
+            ),
             0.0
         );
     }
@@ -1064,6 +1104,7 @@ mod tests {
             None,
             ColorSpace::default(),
             Direction::Forward,
+            Closed::Left,
         );
         let high = binned_map(
             &Value::Number(95.0),
@@ -1072,6 +1113,7 @@ mod tests {
             None,
             ColorSpace::default(),
             Direction::Forward,
+            Closed::Left,
         );
         let (low, high) = (low.as_number().unwrap(), high.as_number().unwrap());
         assert!(
@@ -1080,5 +1122,33 @@ mod tests {
         );
         // Bin 0 spans [10, 20], centre 15 → 0.15 of the 0..100 domain.
         assert!((low - 0.15).abs() < 1e-12, "{low}");
+    }
+
+    #[test]
+    fn binned_map_closed_right_sends_edge_values_to_the_lower_bin() {
+        let domain = InputRange::Continuous {
+            min: 0.0,
+            max: 100.0,
+        };
+        let edges = [0.0, 50.0, 100.0];
+        let map = |v: f64, closed: Closed| {
+            binned_map(
+                &Value::Number(v),
+                Some(&domain),
+                Some(&edges),
+                None,
+                ColorSpace::default(),
+                Direction::Forward,
+                closed,
+            )
+            .as_number()
+            .unwrap()
+        };
+        // Bin centres: [0, 50] → 0.25, (50, 100] → 0.75.
+        assert!((map(50.0, Closed::Right) - 0.25).abs() < 1e-12);
+        assert!((map(50.0, Closed::Left) - 0.75).abs() < 1e-12);
+        // Outer boundaries land in an end bin under either closedness.
+        assert!((map(0.0, Closed::Right) - 0.25).abs() < 1e-12);
+        assert!((map(100.0, Closed::Right) - 0.75).abs() < 1e-12);
     }
 }
