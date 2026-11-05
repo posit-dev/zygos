@@ -91,6 +91,41 @@ pub fn lerp_color(a: Color, b: Color, t: f64, space: ColorSpace) -> Color {
     }
 }
 
+/// Interpolate across `stops`, returning `count` evenly-spaced colors.
+///
+/// Endpoints are preserved exactly: `result[0] == stops[0]` and
+/// `result[count - 1] == stops[last]`. A single stop yields that stop
+/// repeated; `count == 1` yields the first stop; zero stops or
+/// `count == 0` yields an empty vec. With several
+/// stops, output index `i` sits at `t = i / (count - 1)` and interpolates
+/// within segment `floor(t * (n - 1))` (clamped to the last segment), so a
+/// stop is reproduced exactly whenever an output index lands on it.
+pub fn ramp(stops: &[Color], count: usize, space: ColorSpace) -> Vec<Color> {
+    let n = stops.len();
+    if n == 0 || count == 0 {
+        return Vec::new();
+    }
+    if n == 1 {
+        return vec![stops[0]; count];
+    }
+    if count == 1 {
+        return vec![stops[0]];
+    }
+    let den = count - 1;
+    (0..count)
+        .map(|i| {
+            if i == den {
+                return stops[n - 1];
+            }
+            // Integer arithmetic keeps stop-aligned indices exact.
+            let num = i * (n - 1);
+            let seg = (num / den).min(n - 2);
+            let local = (num - seg * den) as f64 / den as f64;
+            lerp_color(stops[seg], stops[seg + 1], local, space)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +207,46 @@ mod tests {
     #[test]
     fn default_space_is_oklab() {
         assert_eq!(ColorSpace::default(), ColorSpace::Oklab);
+    }
+
+    #[test]
+    fn ramp_preserves_endpoints() {
+        let stops = [rgb8(255, 0, 0), rgb8(0, 0, 255)];
+        for space in [ColorSpace::Srgb, ColorSpace::Oklab] {
+            let r = ramp(&stops, 7, space);
+            assert_eq!(r.len(), 7);
+            assert_eq!(r[0], stops[0]);
+            assert_eq!(r[6], stops[1]);
+        }
+    }
+
+    #[test]
+    fn ramp_single_stop_repeats() {
+        let c = rgb8(10, 20, 30);
+        assert_eq!(ramp(&[c], 4, ColorSpace::Oklab), vec![c; 4]);
+    }
+
+    #[test]
+    fn ramp_empty_inputs() {
+        let c = rgb8(1, 2, 3);
+        assert!(ramp(&[], 5, ColorSpace::Oklab).is_empty());
+        assert!(ramp(&[c], 0, ColorSpace::Oklab).is_empty());
+        assert!(ramp(&[c, c], 0, ColorSpace::Srgb).is_empty());
+    }
+
+    #[test]
+    fn ramp_count_one_yields_first_stop() {
+        let stops = [rgb8(255, 0, 0), rgb8(0, 0, 255)];
+        assert_eq!(ramp(&stops, 1, ColorSpace::Oklab), vec![stops[0]]);
+    }
+
+    #[test]
+    fn ramp_hits_middle_stop_when_count_aligns() {
+        let stops = [rgb8(255, 0, 0), rgb8(0, 255, 0), rgb8(0, 0, 255)];
+        for space in [ColorSpace::Srgb, ColorSpace::Oklab] {
+            let r = ramp(&stops, 5, space);
+            assert_eq!(r[2], stops[1]);
+            assert_eq!(r[4], stops[2]);
+        }
     }
 }
