@@ -395,8 +395,10 @@ pub fn sqrt_breaks(min: f64, max: f64, n: usize) -> Vec<f64> {
 /// the positive and negative branches independently and stitching with a
 /// zero break in the middle.
 ///
-/// `base` is the log base for the positive / negative branches
-/// (typically `e` for Asinh, or 2 / 10 for PseudoLog2 / PseudoLog10).
+/// `base` sets the 1-2-5 labeling pattern of the emitted domain values,
+/// independently of the transform's own base: breaks are read as domain
+/// labels, so 10 is the usual choice even for Asinh / baseless PseudoLog
+/// (powers of e would label as 2.718…); 2 suits PseudoLog2.
 pub fn symlog_breaks(min: f64, max: f64, n: usize, base: f64) -> Vec<f64> {
     if !min.is_finite() || !max.is_finite() || min >= max || base <= 1.0 {
         return Vec::new();

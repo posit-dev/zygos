@@ -148,7 +148,10 @@ pub fn continuous_map(
 /// to `Value::Number` for the formatter to handle. Transform-aware:
 /// log scales emit the 1-2-5 pattern across decades; sqrt scales emit
 /// Wilkinson-Extended in sqrt space; symmetric-log scales (Asinh /
-/// PseudoLog) emit log breaks on each branch around zero.
+/// PseudoLog) emit log breaks on each branch around zero. Asinh and the
+/// baseless PseudoLog place their breaks in decades: both grow like a
+/// natural log, but powers of e would label as 2.718…, so the 1-2-5
+/// pattern rides on base 10 like the dedicated PseudoLog10 kind.
 pub fn continuous_breaks(
     input_range: Option<&InputRange>,
     transform: &Transform,
@@ -195,9 +198,7 @@ fn transform_breaks(min: f64, max: f64, n: usize, kind: TransformKind) -> Vec<f6
         TransformKind::Log2 => log_pretty_breaks(min, max, n, 2.0),
         TransformKind::Log => log_pretty_breaks(min, max, n, std::f64::consts::E),
         TransformKind::Sqrt => sqrt_breaks(min, max, n),
-        TransformKind::Asinh | TransformKind::PseudoLog => {
-            symlog_breaks(min, max, n, std::f64::consts::E)
-        }
+        TransformKind::Asinh | TransformKind::PseudoLog => symlog_breaks(min, max, n, 10.0),
         TransformKind::PseudoLog2 => symlog_breaks(min, max, n, 2.0),
         TransformKind::PseudoLog10 => symlog_breaks(min, max, n, 10.0),
     }
@@ -212,9 +213,7 @@ fn transform_minor_breaks(min: f64, max: f64, kind: TransformKind, majors: &[Val
         TransformKind::Log10 => log_minor_breaks(min, max, 10.0),
         TransformKind::Log2 => log_minor_breaks(min, max, 2.0),
         TransformKind::Log => log_minor_breaks(min, max, std::f64::consts::E),
-        TransformKind::Asinh | TransformKind::PseudoLog => {
-            symlog_minor_breaks(min, max, std::f64::consts::E)
-        }
+        TransformKind::Asinh | TransformKind::PseudoLog => symlog_minor_breaks(min, max, 10.0),
         TransformKind::PseudoLog2 => symlog_minor_breaks(min, max, 2.0),
         TransformKind::PseudoLog10 => symlog_minor_breaks(min, max, 10.0),
         // Identity / Square / Exp* / Sqrt: linear subdivision between
@@ -733,6 +732,28 @@ fn find_bin(v: f64, edges: &[f64]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asinh_and_pseudo_log_breaks_fall_on_decades() {
+        // Both grow like a natural log, but breaks at powers of e label as
+        // 2.718… — the 1-2-5 pattern rides on base 10.
+        let range = InputRange::Continuous {
+            min: -1000.0,
+            max: 1000.0,
+        };
+        for kind in [TransformKind::Asinh, TransformKind::PseudoLog] {
+            let t = Transform::of(kind);
+            let breaks: Vec<f64> = continuous_breaks(Some(&range), &t, 5)
+                .iter()
+                .filter_map(|v| v.as_number())
+                .collect();
+            assert_eq!(
+                breaks,
+                vec![-1000.0, -500.0, -200.0, -100.0, 0.0, 100.0, 200.0, 500.0, 1000.0],
+                "{kind:?} should break on the base-10 1-2-5 pattern"
+            );
+        }
+    }
 
     #[test]
     fn find_bin_brackets_are_half_open_with_a_closed_top() {
