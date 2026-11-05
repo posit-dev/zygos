@@ -64,6 +64,7 @@ pub mod geometry;
 pub mod input;
 mod linetype_step;
 pub mod locale;
+pub mod oob;
 pub mod output;
 #[cfg(feature = "palettes")]
 pub mod palettes;
@@ -102,6 +103,7 @@ pub use direction::Direction;
 pub use geometry::{Coord, Geometry, ParseError as GeometryParseError, Polygon as GeometryPolygon};
 pub use input::InputRange;
 pub use locale::Locale;
+pub use oob::OobPolicy;
 pub use output::OutputRange;
 pub use scale_type::{
     binned_band_width, binned_band_width_at, binned_breaks, binned_map, binned_map_break,
