@@ -117,4 +117,4 @@ pub use transform::{
     expand_range_transformed, expand_range_transformed_selective, transform_allowed_domain,
     transform_forward, transform_inverse, Transform, TransformKind,
 };
-pub use value::{DataColumn, Date, DateTime, Duration, LinetypeStep, Time, Value};
+pub use value::{rel, DataColumn, Date, DateTime, Duration, LinetypeStep, Rel, Time, Value};

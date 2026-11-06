@@ -310,6 +310,12 @@ pub enum Value {
     /// accept geometry input; the consuming geom walks the structure and
     /// maps each coordinate through bound x/y scales.
     Geometry(Arc<Geometry>),
+
+    /// A factor of a consumer-defined base quantity, e.g. `0.8` for
+    /// 0.8 × a resolved font size. What it multiplies is defined by the
+    /// consumer (in hephaestus, the geom's channel). Opaque to scales:
+    /// `as_number` does not project it, so scale training rejects it.
+    Relative(f64),
 }
 
 impl Value {
@@ -323,7 +329,7 @@ impl Value {
     /// finite f64).
     pub fn is_finite(&self) -> bool {
         match self {
-            Value::Number(n) => n.is_finite(),
+            Value::Number(n) | Value::Relative(n) => n.is_finite(),
             Value::Date(_) | Value::DateTime(_) | Value::Time(_) | Value::Duration(_) => true,
             _ => false,
         }
@@ -402,6 +408,15 @@ impl Value {
         }
     }
 
+    /// Read as a factor if this is a [`Value::Relative`]; else `None`.
+    pub fn as_relative(&self) -> Option<f64> {
+        if let Value::Relative(f) = *self {
+            Some(f)
+        } else {
+            None
+        }
+    }
+
     /// Deterministic equality for diff/lookup keys. Two `Value::Number`
     /// NaNs compare equal; positive and negative zero compare equal.
     /// `Value::Linetype` compares element-wise via
@@ -425,6 +440,7 @@ impl Value {
                         .all(|(x, y)| linetype_step_key_eq(x, y))
             }
             (Geometry(a), Geometry(b)) => Arc::ptr_eq(a, b),
+            (Relative(a), Relative(b)) => canonical_f64_bits(*a) == canonical_f64_bits(*b),
             _ => false,
         }
     }
@@ -462,6 +478,7 @@ impl Value {
                 // Pointer identity matches `key_eq`: same Arc = same row.
                 (Arc::as_ptr(g) as usize).hash(state);
             }
+            Value::Relative(f) => canonical_f64_bits(*f).hash(state),
         }
     }
 }
@@ -575,6 +592,25 @@ impl From<Duration> for Value {
     }
 }
 
+/// A relative-unit factor: a multiple of a consumer-defined base
+/// quantity. Newtype so `rel(0.8)` and `0.8` can't be confused at
+/// `Into<Value>` / `Into<DataColumn>` boundaries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rel(pub f64);
+
+/// Terse constructor for [`Rel`].
+pub fn rel(f: f64) -> Rel {
+    Rel(f)
+}
+
+// No `From<f64>` for `Value::Relative` — it would collide with the
+// `Number` conversion (same shape as the documented linetype collision).
+impl From<Rel> for Value {
+    fn from(r: Rel) -> Self {
+        Value::Relative(r.0)
+    }
+}
+
 // ─── DataColumn ──────────────────────────────────────────────────────────────
 
 /// Typed columnar container — each variant holds a contiguous `Vec<T>`.
@@ -611,6 +647,11 @@ pub enum DataColumn {
     /// constructed by replicating one geometry (e.g. a small fixed set
     /// of country outlines).
     Geometry(Vec<Arc<Geometry>>),
+
+    /// Per-row factors of a consumer-defined base; see `Value::Relative`.
+    /// Stored apart from `F64` so the factor can never leak into scale
+    /// training as an absolute number.
+    Relative(Vec<f64>),
 }
 
 impl DataColumn {
@@ -630,6 +671,7 @@ impl DataColumn {
             DataColumn::Duration(v) => v.len(),
             DataColumn::Linetype(v) => v.len(),
             DataColumn::Geometry(v) => v.len(),
+            DataColumn::Relative(v) => v.len(),
         }
     }
 
@@ -657,6 +699,7 @@ impl DataColumn {
             DataColumn::Duration(v) => Value::Duration(v[i]),
             DataColumn::Linetype(v) => Value::Linetype(v[i].clone()),
             DataColumn::Geometry(v) => Value::Geometry(v[i].clone()),
+            DataColumn::Relative(v) => Value::Relative(v[i]),
         }
     }
 
@@ -710,6 +753,7 @@ impl DataColumn {
                         .all(|(x, y)| linetype_step_key_eq(x, y))
             }
             (Geometry(a), Geometry(b)) => Arc::ptr_eq(&a[i], &b[j]),
+            (Relative(a), Relative(b)) => canonical_f64_bits(a[i]) == canonical_f64_bits(b[j]),
             _ => false,
         }
     }
@@ -816,6 +860,14 @@ impl From<Vec<Arc<[LinetypeStep]>>> for DataColumn {
 impl From<Vec<Geometry>> for DataColumn {
     fn from(v: Vec<Geometry>) -> Self {
         DataColumn::Geometry(v.into_iter().map(Arc::new).collect())
+    }
+}
+
+// Relative columns arrive through the `Rel` newtype — no `From<Vec<f64>>`
+// here, for the same collision reason as `From<f64> for Value::Relative`.
+impl From<Vec<Rel>> for DataColumn {
+    fn from(v: Vec<Rel>) -> Self {
+        DataColumn::Relative(v.into_iter().map(|r| r.0).collect())
     }
 }
 impl From<Vec<Arc<Geometry>>> for DataColumn {
@@ -1068,6 +1120,56 @@ mod tests {
         assert!(a.key_eq(&b));
         assert!(!a.key_eq(&c));
         assert_eq!(hash_of(&a), hash_of(&b));
+    }
+
+    // ── Relative value / column ──
+
+    #[test]
+    fn value_relative_round_trip() {
+        let v: Value = rel(0.8).into();
+        assert_eq!(v.as_relative(), Some(0.8));
+    }
+
+    #[test]
+    fn value_relative_is_not_a_number() {
+        // The load-bearing property: scales train through `as_number`,
+        // so a factor must not project as an absolute value.
+        let v = Value::Relative(0.8);
+        assert_eq!(v.as_number(), None);
+        assert!(v.is_finite());
+        assert!(!Value::Relative(f64::NAN).is_finite());
+    }
+
+    #[test]
+    fn value_relative_key_eq_distinguishes_number() {
+        let r = Value::Relative(1.0);
+        let n = Value::Number(1.0);
+        assert!(!r.key_eq(&n));
+        assert_ne!(hash_of(&r), hash_of(&n));
+        assert!(r.key_eq(&Value::Relative(1.0)));
+        assert_eq!(hash_of(&r), hash_of(&Value::Relative(1.0)));
+        // NaN factors canonicalise like NaN numbers.
+        assert!(Value::Relative(f64::NAN).key_eq(&Value::Relative(f64::NAN)));
+    }
+
+    #[test]
+    fn datacolumn_relative_round_trip() {
+        let col: DataColumn = vec![rel(0.8), rel(1.2)].into();
+        assert!(matches!(col, DataColumn::Relative(_)));
+        assert_eq!(col.len(), 2);
+        assert!(col.get(0).key_eq(&Value::Relative(0.8)));
+        assert!(col.get(1).key_eq(&Value::Relative(1.2)));
+    }
+
+    #[test]
+    fn datacolumn_relative_key_eq_at() {
+        let a: DataColumn = vec![rel(0.8), rel(1.2)].into();
+        let b: DataColumn = vec![rel(1.2)].into();
+        assert!(a.key_eq_at(1, &b, 0));
+        assert!(!a.key_eq_at(0, &b, 0));
+        // Different variants never compare equal, even for same payload.
+        let c: DataColumn = vec![1.2_f64].into();
+        assert!(!a.key_eq_at(1, &c, 0));
     }
 
     // ── DataColumn ──

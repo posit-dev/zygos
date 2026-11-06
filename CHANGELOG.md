@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Value::Relative` / `DataColumn::Relative`: a factor of a
+  consumer-defined base quantity (e.g. `0.8` × a resolved font size),
+  constructed via the `Rel` newtype / `rel()` constructor. Opaque to
+  scales — `as_number` does not project it, so scale training rejects a
+  relative value as non-numeric. Read back with `Value::as_relative`.
+
 ## [0.3.0] - 2026-11-05
 
 ### Added
