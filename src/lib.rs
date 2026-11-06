@@ -19,8 +19,11 @@
 //!   or reversed. Flips the normalised fraction / domain index, so one
 //!   flag reverses a position axis and a palette alike.
 //! - [`AxisSide`] / [`LegendSide`] — placement enums.
-//! - [`Locale`] — number / date formatting rules threaded into label
-//!   generation.
+//! - [`Locale`] — a locale tag threaded into label generation.
+//! - [`LabelSpec`] / [`Template`] — break-label specs: a
+//!   [`Value`]-keyed rename table plus a template minilanguage,
+//!   re-rendered against whatever break set a scale currently
+//!   produces.
 //! - Free-function algorithms:
 //!   - Per scale type: [`continuous_map`], [`discrete_map`],
 //!     [`ordinal_map`], [`binned_map`], [`identity_map`].
@@ -64,6 +67,7 @@ pub mod color;
 pub mod direction;
 pub mod geometry;
 pub mod input;
+pub mod label;
 mod linetype_step;
 pub mod locale;
 pub mod oob;
@@ -105,6 +109,7 @@ pub use chrome::{AxisSide, LegendSide};
 pub use direction::Direction;
 pub use geometry::{Coord, Geometry, ParseError as GeometryParseError, Polygon as GeometryPolygon};
 pub use input::InputRange;
+pub use label::{default_label, shared_precision, LabelSpec, Placeholder, Template};
 pub use locale::Locale;
 pub use oob::OobPolicy;
 pub use output::OutputRange;

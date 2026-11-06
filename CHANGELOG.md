@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `label` module — break-label specs carried as plain data alongside a
+  scale and re-rendered against whatever break set the scale currently
+  produces (viewport resize, re-domain), instead of folding formatting
+  into a static string map at first break computation. `LabelSpec` is a
+  `Value`-keyed rename table (`rename` / `suppress`, matched by
+  `Value::key_eq`) plus a fallback `Template`; `labels()` resolves
+  rename-first, then expands the template, deriving a shared decimal
+  precision across the current break set (`shared_precision`, after R's
+  `scales::precision()`). `default_label` renders a bare `Value`.
+  Template minilanguage, std-only and hand-rolled:
+    - `{}`, `{:UPPER}` / `{:lower}` / `{:Title}` (keywords are
+      ASCII-case-insensitive, SQL-style; payloads stay case-sensitive).
+    - `{:num <fmt>}` — printf subset: conversions `d i u o x X f F e E
+      g G s` and `%%`, flags `- + space 0 #`, width, precision, ignored
+      length modifiers (`%ld`), and the POSIX `'` thousands separator
+      (`,` accepted as an alias). Extensions: `%S` = SI-prefixed
+      notation with precision as significant digits (`{:num %.2S}` →
+      `1.2M`), and the `!` flag = Unicode scientific notation on
+      `e/E/g/G` (`{:num %!.2e}` → `1.23 × 10³`). A `{:num}` body
+      without the `%` introducer degrades to plain `{}`.
+    - `{:time <fmt>}` — strftime subset over the temporal `Value`
+      variants and ISO strings: `%Y %y %m %d %e %H %I %M %S %p %P %b %B
+      %h %a %A %j %s %t %n %u %w %U %W %V %G %%`, composites
+      `%F %T %R %D %r`, fractional seconds `%f` (9-digit ns), `%.f`,
+      `%.3f` / `%.6f` / `%.9f`, and the `%-` / `%_` / `%0` padding
+      modifiers. `%V` / `%G` are ISO 8601 week / week-year.
+    - `{:abbr N}` (ellipsis truncation), `{:bytes [N]}` (base-1024 IEC
+      units), `{:duration [unit]}` (composite spans like `1h 30m`;
+      bare numbers read in `unit`, default seconds), `{:ordinal}`
+      (`1st` / `2nd` / `3rd`).
+    - Unknown placeholders degrade to `{}` for forward compatibility.
+  Negative numbers render with U+2212 MINUS SIGN throughout (labels
+  are presentation). Locale-aware names and separators remain the
+  consumer formatter's job, as with `Locale`.
 - `BreakTarget` and `resolve_target` (new `break_target` module):
   tick density as a count or as a desired physical spacing in pt.
   `BreakTarget::Spacing` stays unresolved until break time, when the
