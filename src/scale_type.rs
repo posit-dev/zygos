@@ -9,6 +9,7 @@
 
 use crate::color::{lerp_color, ColorSpace};
 
+use super::break_target::{resolve_target, BreakTarget};
 use super::breaks::{
     extended_breaks, linear_minor_breaks_between, log_minor_breaks, log_pretty_breaks, sqrt_breaks,
     symlog_breaks, symlog_minor_breaks, temporal_breaks_date, temporal_breaks_datetime,
@@ -180,6 +181,20 @@ pub fn continuous_breaks(
         .collect()
 }
 
+/// [`continuous_breaks`] with the density given as a [`BreakTarget`]:
+/// a tick count, or a desired physical spacing in pt resolved against
+/// `axis_len_pt` (the rendered axis extent, which only the consumer
+/// knows). Resolution happens first, so the transform-aware pretty
+/// algorithms are untouched — spacing is approximate by design.
+pub fn continuous_breaks_with_target(
+    input_range: Option<&InputRange>,
+    transform: &Transform,
+    target: BreakTarget,
+    axis_len_pt: f64,
+) -> Vec<Value> {
+    continuous_breaks(input_range, transform, resolve_target(target, axis_len_pt))
+}
+
 /// Minor (sub-tick) positions for a continuous scale. Per-transform:
 /// log scales emit geometric 2..9 between decades; sqrt / linear /
 /// other scales emit one evenly-spaced minor between each pair of
@@ -306,6 +321,20 @@ pub fn temporal_breaks_with_interval(
     raws.into_iter()
         .map(|raw| wrap_temporal_value(raw, unit))
         .collect()
+}
+
+/// [`temporal_breaks`] with the density given as a [`BreakTarget`]: a
+/// tick count, or a desired physical spacing in pt resolved against
+/// `axis_len_pt`. Resolution yields a count that feeds the calendar
+/// interval picker, so a spacing comes back snapped to a calendar
+/// interval — "a tick about every 2 cm" becomes e.g. 2-week breaks.
+pub fn temporal_breaks_with_target(
+    input_range: Option<&InputRange>,
+    unit: TemporalUnit,
+    target: BreakTarget,
+    axis_len_pt: f64,
+) -> Vec<Value> {
+    temporal_breaks(input_range, unit, resolve_target(target, axis_len_pt))
 }
 
 /// Calendar-aligned minor breaks for a temporal scale. Majors spanning
@@ -1124,6 +1153,92 @@ mod tests {
                 Closed::Left
             ),
             0.0
+        );
+    }
+
+    // ── *_with_target shims ──────────────────────────────────────────
+
+    // `Value` has no `PartialEq`; compare break vectors by raw payload.
+    fn raw_values(breaks: &[Value]) -> Vec<f64> {
+        breaks
+            .iter()
+            .map(|v| match v {
+                Value::Number(n) => *n,
+                Value::Date(d) => *d as f64,
+                Value::DateTime(us) | Value::Duration(us) => *us as f64,
+                Value::Time(ns) => *ns as f64,
+                other => panic!("unexpected break value: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn continuous_breaks_with_target_spacing_matches_resolved_count() {
+        let domain = InputRange::Continuous {
+            min: 0.0,
+            max: 100.0,
+        };
+        let t = Transform::of(TransformKind::Identity);
+        // 500 pt axis at 100 pt spacing → 5 ticks, exactly Count(5).
+        let via_spacing =
+            continuous_breaks_with_target(Some(&domain), &t, BreakTarget::Spacing(100.0), 500.0);
+        let via_count = continuous_breaks(Some(&domain), &t, 5);
+        assert_eq!(raw_values(&via_spacing), raw_values(&via_count));
+    }
+
+    #[test]
+    fn continuous_breaks_with_target_spacing_works_across_transforms() {
+        let domain = InputRange::Continuous {
+            min: 1.0,
+            max: 1000.0,
+        };
+        let t = Transform::of(TransformKind::Log10);
+        // 400 pt at 200 pt spacing → 2 ticks; resolution happens before
+        // the transform dispatch, so the log pattern is untouched.
+        let breaks =
+            continuous_breaks_with_target(Some(&domain), &t, BreakTarget::Spacing(200.0), 400.0);
+        assert_eq!(
+            raw_values(&breaks),
+            raw_values(&continuous_breaks(Some(&domain), &t, 2))
+        );
+    }
+
+    #[test]
+    fn temporal_breaks_with_target_spacing_snaps_to_a_calendar_interval() {
+        // A ~1-year Date domain; 500 pt axis at 125 pt spacing → 4
+        // ticks, which the interval picker snaps to quarters.
+        let domain = InputRange::Continuous {
+            min: 19_723.0,
+            max: 20_088.0,
+        };
+        let via_spacing = temporal_breaks_with_target(
+            Some(&domain),
+            TemporalUnit::Date,
+            BreakTarget::Spacing(125.0),
+            500.0,
+        );
+        let via_count = temporal_breaks(Some(&domain), TemporalUnit::Date, 4);
+        assert_eq!(raw_values(&via_spacing), raw_values(&via_count));
+        assert!(via_spacing.iter().all(|v| matches!(v, Value::Date(_))));
+        assert!(!via_spacing.is_empty());
+    }
+
+    #[test]
+    fn with_target_falls_back_on_degenerate_spacing() {
+        let domain = InputRange::Continuous {
+            min: 0.0,
+            max: 100.0,
+        };
+        let t = Transform::of(TransformKind::Identity);
+        let via_spacing =
+            continuous_breaks_with_target(Some(&domain), &t, BreakTarget::Spacing(0.0), 500.0);
+        assert_eq!(
+            raw_values(&via_spacing),
+            raw_values(&continuous_breaks(
+                Some(&domain),
+                &t,
+                crate::breaks::DEFAULT_BREAK_COUNT
+            ))
         );
     }
 

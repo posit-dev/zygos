@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `BreakTarget` and `resolve_target` (new `break_target` module):
+  tick density as a count or as a desired physical spacing in pt.
+  `BreakTarget::Spacing` stays unresolved until break time, when the
+  consumer hands the rendered axis extent to `resolve_target`;
+  resolution yields a count, so Wilkinson and the calendar-interval
+  picker still choose the actual positions and the spacing is
+  approximate. Degenerate spacing or an unusable axis length falls back
+  to `DEFAULT_BREAK_COUNT`. Surfaced through
+  `continuous_breaks_with_target` and `temporal_breaks_with_target`,
+  which delegate to the existing transform-aware / calendar-aligned
+  break paths after resolving.
 - `Value::Relative` / `DataColumn::Relative`: a factor of a
   consumer-defined base quantity (e.g. `0.8` × a resolved font size),
   constructed via the `Rel` newtype / `rel()` constructor. Opaque to

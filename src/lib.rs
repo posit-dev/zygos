@@ -57,6 +57,7 @@
 //! - No rendering. Axes and legends are drawn by the consuming crate
 //!   (hephaestus, ggsql) against its own scene abstraction.
 
+pub mod break_target;
 pub mod breaks;
 pub mod chrome;
 pub mod color;
@@ -87,6 +88,7 @@ pub mod interop_jiff;
 #[cfg(feature = "time")]
 pub mod interop_time;
 
+pub use break_target::{resolve_target, BreakTarget};
 pub use breaks::{
     advance_date_by_interval, advance_datetime_by_interval, advance_time_by_interval,
     align_date_to_grid, align_date_to_interval, align_datetime_to_grid, align_datetime_to_interval,
@@ -108,10 +110,11 @@ pub use oob::OobPolicy;
 pub use output::OutputRange;
 pub use scale_type::{
     binned_band_width, binned_band_width_at, binned_breaks, binned_map, binned_map_break,
-    continuous_breaks, continuous_map, continuous_minor_breaks, discrete_band_width,
-    discrete_breaks, discrete_map, discrete_map_at, identity_map, ordinal_map, ordinal_map_at,
-    temporal_breaks, temporal_breaks_with_interval, temporal_minor_breaks,
-    temporal_minor_breaks_with_interval, wrap_temporal_value, Closed, ScaleTypeKind, TemporalUnit,
+    continuous_breaks, continuous_breaks_with_target, continuous_map, continuous_minor_breaks,
+    discrete_band_width, discrete_breaks, discrete_map, discrete_map_at, identity_map, ordinal_map,
+    ordinal_map_at, temporal_breaks, temporal_breaks_with_interval, temporal_breaks_with_target,
+    temporal_minor_breaks, temporal_minor_breaks_with_interval, wrap_temporal_value, Closed,
+    ScaleTypeKind, TemporalUnit,
 };
 pub use transform::{
     expand_range_transformed, expand_range_transformed_selective, transform_allowed_domain,
