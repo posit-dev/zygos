@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scales — `as_number` does not project it, so scale training rejects a
   relative value as non-numeric. Read back with `Value::as_relative`.
 
+### Changed
+
+- **Breaking:** `continuous_map`, `discrete_map`, `discrete_map_at`,
+  `ordinal_map`, `ordinal_map_at`, and `binned_map` take a `na_value:
+  &Value` parameter, returned for missing data — `Value::Null`, numeric
+  NaN, and (discrete / ordinal) values not in the domain. Type
+  mismatches and out-of-domain binned values still map to `Null`.
+  Passing `&Value::Null` reproduces the previous behaviour.
+
 ## [0.3.0] - 2026-11-05
 
 ### Added

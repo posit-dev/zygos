@@ -96,6 +96,13 @@ impl ScaleTypeKind {
 // tick algorithms — which all require `lo < hi` and return nothing for a
 // descending pair — are handed the endpoints in order rather than as the
 // caller happened to write them.
+/// `true` for the inputs a scale treats as missing: `Value::Null` and
+/// numeric NaN. Type mismatches (a string on a continuous scale) are not
+/// missing data — they still map to `Null`, never to the `na_value`.
+fn is_missing(input: &Value) -> bool {
+    input.is_null() || matches!(input.as_number(), Some(n) if n.is_nan())
+}
+
 fn ordered(min: f64, max: f64) -> (f64, f64) {
     if min <= max {
         (min, max)
@@ -115,16 +122,22 @@ fn ordered(min: f64, max: f64) -> (f64, f64) {
 /// other output type. [`Direction::Reversed`] mirrors the normalised
 /// fraction before it reaches the output range.
 ///
-/// Returns `Value::Null` if `input` has no numeric projection or the input
-/// range is missing / not continuous.
+/// Missing input (`Value::Null` or numeric NaN) returns `na_value`;
+/// pass `&Value::Null` to keep missing data unmapped. Returns
+/// `Value::Null` if `input` has no numeric projection (a type mismatch,
+/// not missing data) or the input range is missing / not continuous.
 pub fn continuous_map(
     input: &Value,
     input_range: Option<&InputRange>,
     output_range: Option<&OutputRange>,
+    na_value: &Value,
     transform: &Transform,
     color_space: ColorSpace,
     direction: Direction,
 ) -> Value {
+    if is_missing(input) {
+        return na_value.clone();
+    }
     let v = match input.as_number() {
         Some(n) => n,
         None => return Value::Null,
@@ -360,10 +373,15 @@ pub fn wrap_temporal_value(raw: f64, unit: TemporalUnit) -> Value {
 /// band-centre fraction `(idx + 0.5) / n` (positional rendering on a
 /// discrete axis). [`Direction::Reversed`] mirrors the index, so the first
 /// category takes the last band and the last palette entry.
+///
+/// An input not in the domain — including `Value::Null` — maps to
+/// `na_value` (ggplot2's `na.value` semantics for unmatched discrete
+/// values); pass `&Value::Null` to keep them unmapped.
 pub fn discrete_map(
     input: &Value,
     input_range: Option<&InputRange>,
     output_range: Option<&OutputRange>,
+    na_value: &Value,
     direction: Direction,
 ) -> Value {
     let domain = match input_range {
@@ -371,22 +389,23 @@ pub fn discrete_map(
         _ => return Value::Null,
     };
     let idx = domain.iter().position(|d| d.key_eq(input));
-    discrete_map_at(idx, domain.len(), output_range, direction)
+    discrete_map_at(idx, domain.len(), output_range, na_value, direction)
 }
 
 /// [`discrete_map`] with the domain scan already done: `idx` is the
-/// input's position in the domain (`None` = not found → `Value::Null`)
+/// input's position in the domain (`None` = not found → `na_value`)
 /// and `n` the domain length. Callers with a cached value→index map
 /// (e.g. a `Scale` bundle) skip the O(|domain|) scan per lookup.
 pub fn discrete_map_at(
     idx: Option<usize>,
     n: usize,
     output_range: Option<&OutputRange>,
+    na_value: &Value,
     direction: Direction,
 ) -> Value {
     let idx = match idx {
         Some(i) => i,
-        None => return Value::Null,
+        None => return na_value.clone(),
     };
     let idx = direction.apply_index(idx, n);
     match output_range {
@@ -428,11 +447,13 @@ pub fn discrete_map_at(
 /// fraction when the output range is unset). `color_space` is the space a
 /// [`OutputRange::Colors`] ramp interpolates in and is ignored by every
 /// other output type. [`Direction::Reversed`] mirrors the index, so the
-/// domain walks the gradient from its far end.
+/// domain walks the gradient from its far end. Like [`discrete_map`],
+/// an input not in the domain maps to `na_value`.
 pub fn ordinal_map(
     input: &Value,
     input_range: Option<&InputRange>,
     output_range: Option<&OutputRange>,
+    na_value: &Value,
     color_space: ColorSpace,
     direction: Direction,
 ) -> Value {
@@ -441,22 +462,30 @@ pub fn ordinal_map(
         _ => return Value::Null,
     };
     let idx = domain.iter().position(|d| d.key_eq(input));
-    ordinal_map_at(idx, domain.len(), output_range, color_space, direction)
+    ordinal_map_at(
+        idx,
+        domain.len(),
+        output_range,
+        na_value,
+        color_space,
+        direction,
+    )
 }
 
 /// [`ordinal_map`] with the domain scan already done, in the same
 /// split as [`discrete_map_at`]. An empty domain (`n == 0`) maps to
-/// `Value::Null` regardless of `idx`.
+/// `Value::Null` regardless of `idx`; a `None` `idx` maps to `na_value`.
 pub fn ordinal_map_at(
     idx: Option<usize>,
     n: usize,
     output_range: Option<&OutputRange>,
+    na_value: &Value,
     color_space: ColorSpace,
     direction: Direction,
 ) -> Value {
     let idx = match idx {
         Some(i) => i,
-        None => return Value::Null,
+        None => return na_value.clone(),
     };
     if n == 0 {
         return Value::Null;
@@ -528,15 +557,26 @@ pub enum Closed {
 /// distance from the far end of the panel, and its palette entry is
 /// counted from the far end of the range. `closed` picks which side of a
 /// bin owns an exact edge value (see [`Closed`]).
+///
+/// Missing input (`Value::Null` or NaN) maps to `na_value`; a value
+/// outside the domain is out-of-bounds, not missing, and still maps to
+/// `Null` (oob handling is the consumer's policy decision).
+// One arg per input the algorithm genuinely needs; a config struct would
+// fight the crate's plain-args style more than the extra param does.
+#[allow(clippy::too_many_arguments)]
 pub fn binned_map(
     input: &Value,
     input_range: Option<&InputRange>,
     bins: Option<&[f64]>,
     output_range: Option<&OutputRange>,
+    na_value: &Value,
     color_space: ColorSpace,
     direction: Direction,
     closed: Closed,
 ) -> Value {
+    if is_missing(input) {
+        return na_value.clone();
+    }
     let v = match input.as_number() {
         Some(n) => n,
         None => return Value::Null,
@@ -948,6 +988,7 @@ mod tests {
                 &cat(v),
                 Some(&domain),
                 Some(&range),
+                &Value::Null,
                 srgb(),
                 Direction::Forward,
             )
@@ -967,9 +1008,15 @@ mod tests {
         let domain =
             InputRange::Discrete(vec![Value::from("a"), Value::from("b"), Value::from("c")]);
         let band = |v: &str| {
-            discrete_map(&cat(v), Some(&domain), None, Direction::Reversed)
-                .as_number()
-                .unwrap()
+            discrete_map(
+                &cat(v),
+                Some(&domain),
+                None,
+                &Value::Null,
+                Direction::Reversed,
+            )
+            .as_number()
+            .unwrap()
         };
         // The first category takes the last band centre.
         assert!((band("a") - 2.5 / 3.0).abs() < 1e-12, "{}", band("a"));
@@ -977,9 +1024,15 @@ mod tests {
 
         let range = OutputRange::Numbers(vec![1.0, 2.0, 3.0]);
         let pick = |v: &str| {
-            discrete_map(&cat(v), Some(&domain), Some(&range), Direction::Reversed)
-                .as_number()
-                .unwrap()
+            discrete_map(
+                &cat(v),
+                Some(&domain),
+                Some(&range),
+                &Value::Null,
+                Direction::Reversed,
+            )
+            .as_number()
+            .unwrap()
         };
         assert_eq!(pick("a"), 3.0);
         assert_eq!(pick("c"), 1.0);
@@ -995,6 +1048,7 @@ mod tests {
                 &cat(v),
                 Some(&domain),
                 Some(&range),
+                &Value::Null,
                 srgb(),
                 Direction::Reversed,
             )
@@ -1010,9 +1064,16 @@ mod tests {
     fn ordinal_map_reversed_without_a_range_mirrors_the_band_centre() {
         let domain = InputRange::Discrete(vec![cat("a"), cat("b")]);
         let at = |v: &str| {
-            ordinal_map(&cat(v), Some(&domain), None, srgb(), Direction::Reversed)
-                .as_number()
-                .unwrap()
+            ordinal_map(
+                &cat(v),
+                Some(&domain),
+                None,
+                &Value::Null,
+                srgb(),
+                Direction::Reversed,
+            )
+            .as_number()
+            .unwrap()
         };
         assert!((at("a") - 0.75).abs() < 1e-12);
         assert!((at("b") - 0.25).abs() < 1e-12);
@@ -1102,6 +1163,7 @@ mod tests {
             Some(&domain),
             Some(&edges),
             None,
+            &Value::Null,
             ColorSpace::default(),
             Direction::Forward,
             Closed::Left,
@@ -1111,6 +1173,7 @@ mod tests {
             Some(&domain),
             Some(&edges),
             None,
+            &Value::Null,
             ColorSpace::default(),
             Direction::Forward,
             Closed::Left,
@@ -1137,6 +1200,7 @@ mod tests {
                 Some(&domain),
                 Some(&edges),
                 None,
+                &Value::Null,
                 ColorSpace::default(),
                 Direction::Forward,
                 closed,
@@ -1150,5 +1214,135 @@ mod tests {
         // Outer boundaries land in an end bin under either closedness.
         assert!((map(0.0, Closed::Right) - 0.25).abs() < 1e-12);
         assert!((map(100.0, Closed::Right) - 0.75).abs() < 1e-12);
+    }
+
+    // ── na_value ────────────────────────────────────────────────────
+
+    fn grey() -> Value {
+        Value::Color(crate::color::rgb(0.5, 0.5, 0.5))
+    }
+
+    fn cont_domain() -> InputRange {
+        InputRange::Continuous {
+            min: 0.0,
+            max: 10.0,
+        }
+    }
+
+    #[test]
+    fn continuous_map_sends_null_and_nan_to_na_value() {
+        let domain = cont_domain();
+        let t = Transform::of(TransformKind::Identity);
+        let map = |v: &Value| {
+            continuous_map(
+                v,
+                Some(&domain),
+                None,
+                &grey(),
+                &t,
+                srgb(),
+                Direction::Forward,
+            )
+        };
+        assert!(map(&Value::Null).key_eq(&grey()));
+        assert!(map(&Value::Number(f64::NAN)).key_eq(&grey()));
+        // In-range data is unaffected.
+        assert_eq!(map(&Value::Number(5.0)).as_number(), Some(0.5));
+    }
+
+    #[test]
+    fn continuous_map_keeps_type_mismatches_null() {
+        // A string on a continuous scale is a type mismatch, not missing
+        // data — it must not pick up the na_value. Same for Relative.
+        let domain = cont_domain();
+        let t = Transform::of(TransformKind::Identity);
+        let map = |v: &Value| {
+            continuous_map(
+                v,
+                Some(&domain),
+                None,
+                &grey(),
+                &t,
+                srgb(),
+                Direction::Forward,
+            )
+        };
+        assert!(map(&cat("a")).is_null());
+        assert!(map(&Value::Relative(0.8)).is_null());
+    }
+
+    #[test]
+    fn continuous_map_null_na_value_preserves_the_old_behaviour() {
+        let domain = cont_domain();
+        let t = Transform::of(TransformKind::Identity);
+        let v = continuous_map(
+            &Value::Null,
+            Some(&domain),
+            None,
+            &Value::Null,
+            &t,
+            srgb(),
+            Direction::Forward,
+        );
+        assert!(v.is_null());
+    }
+
+    #[test]
+    fn discrete_map_sends_unmatched_and_null_to_na_value() {
+        let domain = InputRange::Discrete(vec![cat("a"), cat("b")]);
+        let map = |v: &Value| discrete_map(v, Some(&domain), None, &grey(), Direction::Forward);
+        assert!(map(&cat("zzz")).key_eq(&grey()));
+        assert!(map(&Value::Null).key_eq(&grey()));
+        // Matched values are unaffected.
+        assert_eq!(map(&cat("a")).as_number(), Some(0.25));
+    }
+
+    #[test]
+    fn discrete_map_at_sends_none_to_na_value() {
+        let v = discrete_map_at(None, 3, None, &grey(), Direction::Forward);
+        assert!(v.key_eq(&grey()));
+        // A found index is unaffected.
+        let v = discrete_map_at(Some(0), 2, None, &grey(), Direction::Forward);
+        assert_eq!(v.as_number(), Some(0.25));
+    }
+
+    #[test]
+    fn ordinal_map_sends_unmatched_to_na_value() {
+        let domain = InputRange::Discrete(vec![cat("a"), cat("b")]);
+        let range = OutputRange::Numbers(vec![0.0, 10.0]);
+        let v = ordinal_map(
+            &cat("zzz"),
+            Some(&domain),
+            Some(&range),
+            &grey(),
+            srgb(),
+            Direction::Forward,
+        );
+        assert!(v.key_eq(&grey()));
+        let v = ordinal_map_at(None, 2, Some(&range), &grey(), srgb(), Direction::Forward);
+        assert!(v.key_eq(&grey()));
+    }
+
+    #[test]
+    fn binned_map_sends_missing_to_na_value_but_oob_stays_null() {
+        let domain = cont_domain();
+        let edges = [0.0, 5.0, 10.0];
+        let map = |v: &Value| {
+            binned_map(
+                v,
+                Some(&domain),
+                Some(&edges),
+                None,
+                &grey(),
+                srgb(),
+                Direction::Forward,
+                Closed::Left,
+            )
+        };
+        assert!(map(&Value::Null).key_eq(&grey()));
+        assert!(map(&Value::Number(f64::NAN)).key_eq(&grey()));
+        // Finite but outside the domain is out-of-bounds, not missing.
+        assert!(map(&Value::Number(20.0)).is_null());
+        assert!(map(&Value::Number(f64::INFINITY)).is_null());
     }
 }
