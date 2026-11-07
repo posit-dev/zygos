@@ -49,6 +49,10 @@
 //!   digits (`{:num %.2S}` → `1.2M`). Length modifiers (`%ld`,
 //!   `%lld`) are accepted and ignored since the value is always an
 //!   f64.
+//! - `{:num_align [fmt]}` — `{:num fmt}` (or the default rendering
+//!   when bare) with figure-space (U+2007) padding across the break
+//!   set so stacked decimal points align; a table-display concern
+//!   that assumes tabular figures in the font
 //!
 //! Labels are presentation, so negative numbers render with U+2212
 //! MINUS SIGN rather than a hyphen, throughout (plain `{}`, `{:num}`,
@@ -210,10 +214,27 @@ impl LabelSpec {
         } else {
             None
         };
-        breaks
+        let mut labels: Vec<Option<String>> = breaks
             .iter()
             .map(|v| self.label_inner(v, precision))
-            .collect()
+            .collect();
+        // Labels rendered through `{:num_align …}` get figure-space
+        // padding so stacked decimal points line up. Set-level like
+        // `shared_precision`; renamed labels are text and excluded.
+        if self.template.as_ref().is_some_and(Template::has_num_align) {
+            let idx: Vec<usize> = breaks
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| self.lookup(v).is_none())
+                .map(|(i, _)| i)
+                .collect();
+            let mut subset: Vec<Option<String>> = idx.iter().map(|&i| labels[i].clone()).collect();
+            decimal_align(&mut subset);
+            for (i, label) in idx.into_iter().zip(subset) {
+                labels[i] = label;
+            }
+        }
+        labels
     }
 
     fn label_inner(&self, value: &Value, precision: Option<usize>) -> Option<String> {
@@ -283,6 +304,15 @@ pub enum Placeholder {
     Time(String),
     /// `{:num <fmt>}` — printf-subset number formatting.
     Number(String),
+    /// `{:num_align [fmt]}` — `{:num <fmt>}` (or the default rendering
+    /// when bare), with figure-space (U+2007) padding applied across
+    /// the break set so stacked decimal points align; see
+    /// [`decimal_align`]. The padding is set-level, so it happens in
+    /// [`LabelSpec::labels`] only — [`LabelSpec::label`] renders a lone
+    /// value with nothing to align to. Tabular figures in the font are
+    /// the user's call: with proportional figures the padding can't
+    /// rescue alignment.
+    NumAlign(String),
     /// `{:abbr N}` — truncate the default rendering to N characters
     /// (including the ellipsis).
     Abbr(usize),
@@ -368,6 +398,16 @@ fn parse_placeholder(inner: &str) -> Placeholder {
                 },
             }
         }
+        _ if lower == "num_align" => Placeholder::NumAlign(String::new()),
+        _ if lower.starts_with("num_align ") => {
+            let payload = &body["num_align ".len()..];
+            // Same rule as `{:num}`: the body must start with the
+            // printf `%` introducer or the spec degrades to `{}`.
+            if !payload.trim_start().starts_with('%') {
+                return Placeholder::Plain;
+            }
+            Placeholder::NumAlign(payload.to_string())
+        }
         _ => {
             for (keyword, is_num) in [("time ", false), ("num ", true)] {
                 if let Some(payload) = lower.strip_prefix(keyword) {
@@ -443,6 +483,15 @@ impl Template {
                 .any(|s| matches!(s, Segment::Placeholder(Placeholder::Plain)))
     }
 
+    /// `true` if any segment is `{:num_align …}` — the case where
+    /// rendered labels get figure-space decimal alignment across the
+    /// set ([`decimal_align`]).
+    pub fn has_num_align(&self) -> bool {
+        self.segments
+            .iter()
+            .any(|s| matches!(s, Segment::Placeholder(Placeholder::NumAlign(_))))
+    }
+
     /// Render the template for one value. Returns `None` for
     /// [`Value::Null`]. A template with no placeholders renders its
     /// literal text for every value.
@@ -473,6 +522,14 @@ fn apply_placeholder(p: &Placeholder, value: &Value, precision: Option<usize>) -
         Placeholder::Title => title_case(&default_label(value, None).unwrap_or_default()),
         Placeholder::Time(fmt) => format_temporal(value, fmt),
         Placeholder::Number(spec) => match value.as_number() {
+            Some(n) => printf_format(spec, n)
+                .unwrap_or_else(|_| default_label(value, None).unwrap_or_default()),
+            None => default_label(value, None).unwrap_or_default(),
+        },
+        Placeholder::NumAlign(spec) if spec.is_empty() => {
+            default_label(value, precision).unwrap_or_default()
+        }
+        Placeholder::NumAlign(spec) => match value.as_number() {
             Some(n) => printf_format(spec, n)
                 .unwrap_or_else(|_| default_label(value, None).unwrap_or_default()),
             None => default_label(value, None).unwrap_or_default(),
@@ -690,6 +747,79 @@ fn unicode_minus(s: String) -> String {
         Some(rest) => format!("\u{2212}{rest}"),
         None => s,
     }
+}
+
+/// U+2007 FIGURE SPACE — a space exactly one tabular digit wide.
+pub const FIGURE_SPACE: char = '\u{2007}';
+
+/// Pad the numeric labels in `labels` with figure spaces (U+2007) so
+/// their decimal points align when the labels are stacked — mainly a
+/// table-display concern. Integer parts are left-padded to the widest
+/// in the set, fraction parts right-padded to the widest; a label with
+/// no `.` gets no trailing pad. A label counts as numeric when it is
+/// an optional sign (`-`, `+`, U+2212) plus ASCII digits with at most
+/// one `.` — anything else (units, exponents, text) is left alone, as
+/// are `None` entries.
+///
+/// The padding assumes tabular figures in the rendering font: U+2007
+/// is one *digit* wide, so with proportional figures the aligned
+/// columns still drift. Choosing a tabular-figures font is the user's
+/// call.
+pub fn decimal_align(labels: &mut [Option<String>]) {
+    let parsed: Vec<Option<(bool, usize, usize)>> = labels
+        .iter()
+        .map(|l| l.as_deref().and_then(split_decimal))
+        .collect();
+    let mut max_before = 0;
+    let mut max_after = 0;
+    for &(has_dot, before, after) in parsed.iter().flatten() {
+        max_before = max_before.max(before);
+        if has_dot {
+            max_after = max_after.max(after);
+        }
+    }
+    if max_before == 0 {
+        return;
+    }
+    for (label, parsed) in labels.iter_mut().zip(parsed) {
+        let (Some(s), Some((has_dot, before, after))) = (label.as_ref(), parsed) else {
+            continue;
+        };
+        let mut padded = String::with_capacity(s.len() + max_before + max_after);
+        for _ in before..max_before {
+            padded.push(FIGURE_SPACE);
+        }
+        padded.push_str(s);
+        if has_dot {
+            for _ in after..max_after {
+                padded.push(FIGURE_SPACE);
+            }
+        }
+        *label = Some(padded);
+    }
+}
+
+/// Split a plain decimal label into (`has_dot`, integer-part char
+/// count, fraction char count); `None` for anything but an optional
+/// sign (`-` / `+` / U+2212) plus ASCII digits with at most one `.`.
+/// The sign counts towards the integer width — in tabular-figure
+/// fonts the minus sign is digit-width, like the padding.
+fn split_decimal(s: &str) -> Option<(bool, usize, usize)> {
+    let (before, after) = s.split_once('.').unwrap_or((s, ""));
+    let digits = before
+        .strip_prefix(['-', '+', '\u{2212}'])
+        .unwrap_or(before);
+    if digits.is_empty()
+        || !digits.chars().all(|c| c.is_ascii_digit())
+        || !after.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((
+        s.contains('.'),
+        before.chars().count(),
+        after.chars().count(),
+    ))
 }
 
 /// Decimal places to display a numeric break set consistently, after
@@ -1808,6 +1938,91 @@ mod tests {
             t.format(&Value::Number(9015.5), None),
             Some("2h".to_string())
         );
+    }
+
+    #[test]
+    fn num_align_placeholder() {
+        const FS: char = FIGURE_SPACE;
+        let aligned = |template: &str, breaks: &[f64]| {
+            let mut spec = LabelSpec::new();
+            spec.set_template(template);
+            spec.labels(&breaks.iter().map(|n| Value::Number(*n)).collect::<Vec<_>>())
+        };
+        // Bare: default rendering, decimal points aligned across the set.
+        let labels = aligned("{:num_align}", &[1.5, 42.0, 300.25]);
+        assert_eq!(
+            labels,
+            vec![
+                Some(format!("{FS}{FS}1.5{FS}")),
+                Some(format!("{FS}42")),
+                Some("300.25".to_string()),
+            ]
+        );
+        // With a printf body.
+        let labels = aligned("{:num_align %.2f}", &[1.5, 42.0]);
+        assert_eq!(
+            labels,
+            vec![Some(format!("{FS}1.50")), Some("42.00".to_string())]
+        );
+        // The U+2212 sign counts towards the integer width.
+        let labels = aligned("{:num_align}", &[-1.5, 10.25]);
+        assert_eq!(
+            labels,
+            vec![Some(format!("\u{2212}1.5{FS}")), Some("10.25".to_string())]
+        );
+        // A body without the `%` introducer degrades to `{}` (and is
+        // not marked for alignment).
+        let labels = aligned("{:num_align 2f}", &[1.5, 42.0]);
+        assert_eq!(
+            labels,
+            vec![Some("1.5".to_string()), Some("42".to_string())]
+        );
+        // Renamed labels are text — excluded from the pass.
+        let mut spec = LabelSpec::new();
+        spec.set_template("{:num_align}");
+        spec.rename(Value::Number(42.0), "answer");
+        let labels = spec.labels(&[
+            Value::Number(1.5),
+            Value::Number(42.0),
+            Value::Number(300.25),
+        ]);
+        assert_eq!(
+            labels,
+            vec![
+                Some(format!("{FS}{FS}1.5{FS}")),
+                Some("answer".to_string()),
+                Some("300.25".to_string()),
+            ]
+        );
+        // `label()` is value-local: nothing to align to, no padding.
+        let mut spec = LabelSpec::new();
+        spec.set_template("{:num_align}");
+        assert_eq!(spec.label(&Value::Number(1.5)), Some("1.5".to_string()));
+    }
+
+    #[test]
+    fn decimal_align_skips_non_numeric() {
+        // Units, exponents and text are left alone.
+        let mut labels = vec![
+            Some("1.5 KiB".to_string()),
+            Some("1e4".to_string()),
+            Some("n/a".to_string()),
+            None,
+        ];
+        decimal_align(&mut labels);
+        assert_eq!(
+            labels,
+            vec![
+                Some("1.5 KiB".to_string()),
+                Some("1e4".to_string()),
+                Some("n/a".to_string()),
+                None,
+            ]
+        );
+        // A lone numeric label still gets padded to itself — a no-op.
+        let mut labels = vec![Some("12.5".to_string())];
+        decimal_align(&mut labels);
+        assert_eq!(labels, vec![Some("12.5".to_string())]);
     }
 
     #[test]

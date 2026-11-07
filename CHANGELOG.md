@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `BreakTarget::MaxSpacing` / `BreakTarget::MinSpacing` — spacing
+  variants with a rounding direction, backing consumer syntax like
+  "<40 pt" / ">40 pt". `MaxSpacing` resolves `axis_len / spacing` by
+  rounding the count up (the resolved gap never exceeds N pt, erring
+  towards one more break); `MinSpacing` rounds down (the gap never
+  dips below N pt, erring towards one fewer). The existing `Spacing`
+  keeps rounding to nearest. The resolved count still floors at 2,
+  which can breach a `MinSpacing` guarantee on a very short axis.
+- `{:num_align [fmt]}` — a `:num`-family placeholder that pads its
+  labels with figure spaces (U+2007) across the break set so stacked
+  decimal points align, for table display with tabular-figure fonts.
+  Bare `{:num_align}` uses the default number rendering;
+  `{:num_align %.2f}` pins a printf format first. The padding is
+  set-level, so it applies in `LabelSpec::labels`, not the value-local
+  `LabelSpec::label`. The pass is also exposed directly as
+  `decimal_align` (plus the `FIGURE_SPACE` constant) for consumers
+  with their own formatters.
 - `{:duration [unit] [N]}` — the duration placeholder accepts a part
   count alongside the unit (either order, e.g. `{:duration 3}` or
   `{:duration h 3}`), rendering the N largest units (`2h 30m 15s`)
