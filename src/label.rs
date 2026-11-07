@@ -26,9 +26,11 @@
 //! - `{:abbr N}` — truncate to N characters with an ellipsis
 //! - `{:bytes [N]}` — base-1024 sizes (`1.5 KiB`), N significant
 //!   digits (default 3)
-//! - `{:duration [unit]}` — composite span (`1h 30m`) from a
+//! - `{:duration [unit] [N]}` — composite span (`1h 30m`) from a
 //!   [`Value::Duration`] (µs) or a number read in `unit` (`ns`, `us`,
-//!   `ms`, `s` — the default, `m`, `h`, `d`)
+//!   `ms`, `s` — the default, `m`, `h`, `d`). N is how many unit parts
+//!   to show, largest first (default 2): `{:duration 3}` gives
+//!   `1h 30m 15s`
 //! - `{:ordinal}` — `1st`, `2nd`, `3rd`, …
 //! - `{:time <fmt>}` — calendar formatting with a strftime-style
 //!   subset: `%Y %y %m %d %e %H %I %M %S %p %P %b %B %h %a %A %j %s
@@ -287,11 +289,12 @@ pub enum Placeholder {
     /// `{:bytes [N]}` — base-1024 sizes (`1.5 KiB`); N is significant
     /// digits, default 3.
     Bytes(Option<usize>),
-    /// `{:duration [unit]}` — composite span (`1h 30m`). Numbers are
-    /// read in `unit` (`ns`, `us` / `µs`, `ms`, `s` — the default,
+    /// `{:duration [unit] [N]}` — composite span (`1h 30m`). Numbers
+    /// are read in `unit` (`ns`, `us` / `µs`, `ms`, `s` — the default,
     /// `m`, `h`, `d`); [`Value::Duration`]s are always µs and ignore
-    /// the unit.
-    Duration(Option<f64>),
+    /// the unit. `N` is the number of unit parts shown, largest first
+    /// (default 2).
+    Duration(Option<f64>, Option<usize>),
     /// `{:ordinal}` — `1st`, `2nd`, `3rd`, …
     Ordinal,
 }
@@ -312,7 +315,7 @@ fn parse_placeholder(inner: &str) -> Placeholder {
         "ordinal" => Placeholder::Ordinal,
         _ if lower == "duration" || lower.starts_with("duration ") => {
             // µs per unit of bare-number input.
-            let factor = match lower["duration".len()..].trim() {
+            let factor = |unit: &str| match unit {
                 "" | "s" => Some(1_000_000.0),
                 "ns" => Some(0.001),
                 "us" | "\u{b5}s" => Some(1.0),
@@ -322,9 +325,34 @@ fn parse_placeholder(inner: &str) -> Placeholder {
                 "d" => Some(86_400_000_000.0),
                 _ => None,
             };
-            match factor {
-                Some(f) => Placeholder::Duration(Some(f)),
-                None => Placeholder::Plain,
+            // Args are a unit and/or a part count, in either order.
+            let mut unit = None;
+            let mut parts = None;
+            let mut ok = true;
+            for tok in lower["duration".len()..].split_whitespace() {
+                if let Ok(n) = tok.parse::<usize>() {
+                    if parts.is_some() {
+                        ok = false;
+                        break;
+                    }
+                    parts = Some(n);
+                } else if unit.is_none() {
+                    match factor(tok) {
+                        Some(f) => unit = Some(f),
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                } else {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                Placeholder::Duration(unit, parts)
+            } else {
+                Placeholder::Plain
             }
         }
         _ if lower.starts_with("abbr ") => match lower["abbr ".len()..].trim().parse::<usize>() {
@@ -461,7 +489,7 @@ fn apply_placeholder(p: &Placeholder, value: &Value, precision: Option<usize>) -
             }
             None => default_label(value, None).unwrap_or_default(),
         },
-        Placeholder::Duration(unit) => {
+        Placeholder::Duration(unit, parts) => {
             let us = match value {
                 // Typed durations are µs; the unit arg doesn't apply.
                 Value::Duration(us) => Some(*us as f64),
@@ -469,7 +497,7 @@ fn apply_placeholder(p: &Placeholder, value: &Value, precision: Option<usize>) -
                 _ => None,
             };
             match us {
-                Some(us) => duration_notation(us),
+                Some(us) => duration_notation(us, parts.unwrap_or(2)),
                 None => default_label(value, None).unwrap_or_default(),
             }
         }
@@ -526,10 +554,11 @@ fn significant(v: f64, sig: usize) -> String {
     }
 }
 
-/// Composite span notation from microseconds: the largest two nonzero
-/// units — `5400 s` → `1h 30m`, `90.2 s` → `1m 30s`. Sub-second spans
-/// use `ms` / `µs`; zero is `0s`.
-fn duration_notation(us: f64) -> String {
+/// Composite span notation from microseconds: the largest `max_parts`
+/// nonzero units — `5400 s` → `1h 30m`, `90.2 s` → `1m 30s`. Sub-second
+/// spans use `ms` / `µs`; zero is `0s`.
+fn duration_notation(us: f64, max_parts: usize) -> String {
+    let max_parts = max_parts.max(1);
     const UNITS: [(&str, f64); 6] = [
         ("d", 86_400_000_000.0),
         ("h", 3_600_000_000.0),
@@ -545,7 +574,7 @@ fn duration_notation(us: f64) -> String {
     let mut rem = us.abs();
     let mut parts = Vec::new();
     for (name, size) in UNITS {
-        if rem >= size && parts.len() < 2 {
+        if rem >= size && parts.len() < max_parts {
             let count = (rem / size).floor();
             parts.push(format!("{}{name}", significant(count, 4)));
             rem -= count * size;
@@ -637,10 +666,22 @@ pub fn default_label(value: &Value, precision: Option<usize>) -> Option<String> 
 fn format_number(n: f64, precision: Option<usize>) -> String {
     let s = match precision {
         Some(p) => format!("{n:.p$}"),
-        None => format!("{n}"),
+        None => format!("{}", snap_float_noise(n)),
     };
     // Labels are presentation: U+2212 reads better than a hyphen.
     unicode_minus(s)
+}
+
+/// Snap away accumulated floating-point error before shortest-round-trip
+/// display. A 12-significant-figure round trip (`0.1 + 0.2` → `0.3`,
+/// `0.6000000000001` → `0.6`) kills ULP noise while leaving any precision a
+/// label could plausibly intend intact. Zero and non-finite values pass
+/// through untouched.
+fn snap_float_noise(n: f64) -> f64 {
+    if n == 0.0 || !n.is_finite() {
+        return n;
+    }
+    format!("{n:.11e}").parse().unwrap_or(n)
 }
 
 /// Swap a leading ASCII hyphen for U+2212 MINUS SIGN.
@@ -1728,6 +1769,48 @@ mod tests {
     }
 
     #[test]
+    fn duration_part_count() {
+        // Default is two parts; trailing units are dropped.
+        let t = Template::parse("{:duration}");
+        assert_eq!(
+            t.format(&Value::Number(9015.5), None),
+            Some("2h 30m".to_string())
+        );
+        // N parts, largest first.
+        let t = Template::parse("{:duration 3}");
+        assert_eq!(
+            t.format(&Value::Number(9015.5), None),
+            Some("2h 30m 15s".to_string())
+        );
+        let t = Template::parse("{:duration 6}");
+        assert_eq!(
+            t.format(&Value::Number(9015.5), None),
+            Some("2h 30m 15s 500ms".to_string())
+        );
+        // Part count combines with a unit, in either order.
+        let t = Template::parse("{:duration h 3}");
+        assert_eq!(
+            t.format(&Value::Number(2.5043), None),
+            Some("2h 30m 15s".to_string())
+        );
+        let t = Template::parse("{:duration 3 h}");
+        assert_eq!(
+            t.format(&Value::Number(2.5043), None),
+            Some("2h 30m 15s".to_string())
+        );
+        // Typed durations respect the part count.
+        let t = Template::parse("{:duration 4}");
+        let d = Value::Duration(crate::value::Duration::from_seconds(9015).to_micros());
+        assert_eq!(t.format(&d, None), Some("2h 30m 15s".to_string()));
+        // One part keeps the largest unit only.
+        let t = Template::parse("{:duration 1}");
+        assert_eq!(
+            t.format(&Value::Number(9015.5), None),
+            Some("2h".to_string())
+        );
+    }
+
+    #[test]
     fn ordinal_placeholder() {
         let t = Template::parse("{:ordinal}");
         let cases = [
@@ -2171,6 +2254,42 @@ mod tests {
                 None
             ),
             Some("90".to_string())
+        );
+    }
+
+    #[test]
+    fn default_label_snaps_float_noise() {
+        // Unpinned precision snaps accumulated f64 error before display.
+        assert_eq!(
+            default_label(&Value::Number(0.1 + 0.2), None),
+            Some("0.3".to_string())
+        );
+        assert_eq!(
+            default_label(&Value::Number(0.6000000000001), None),
+            Some("0.6".to_string())
+        );
+        // Zero and non-finite pass through untouched.
+        assert_eq!(
+            default_label(&Value::Number(0.0), None),
+            Some("0".to_string())
+        );
+        assert_eq!(
+            default_label(&Value::Number(f64::NAN), None),
+            Some("NaN".to_string())
+        );
+        assert_eq!(
+            default_label(&Value::Number(f64::INFINITY), None),
+            Some("inf".to_string())
+        );
+        // Real precision up to 12 significant figures survives.
+        assert_eq!(
+            default_label(&Value::Number(1.23456789012), None),
+            Some("1.23456789012".to_string())
+        );
+        // Pinned precision prints as pinned — no snap.
+        assert_eq!(
+            default_label(&Value::Number(0.1 + 0.2), Some(17)),
+            Some("0.30000000000000004".to_string())
         );
     }
 }

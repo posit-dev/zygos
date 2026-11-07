@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `{:duration [unit] [N]}` — the duration placeholder accepts a part
+  count alongside the unit (either order, e.g. `{:duration 3}` or
+  `{:duration h 3}`), rendering the N largest units (`2h 30m 15s`)
+  instead of always the two largest. Default remains 2, so existing
+  templates are unaffected.
+
+### Fixed
+
+- `default_label` / `LabelSpec::label` with unpinned precision no
+  longer print accumulated floating-point noise: values are snapped
+  through a 12-significant-figure round trip before shortest-round-trip
+  display, so `0.1 + 0.2` labels as `0.3` rather than
+  `0.30000000000000004`. Zero, non-finite values and pinned-precision
+  rendering are untouched. This restores the scrub hephaestus's
+  deleted consumer-side formatter used to apply, which single-value
+  and out-of-break-set labels had lost.
+
 ## [0.4.0] - 2026-11-06
 
 ### Added
