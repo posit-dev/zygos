@@ -284,11 +284,15 @@ pub fn integer_breaks(min: f64, max: f64, n: usize, pretty: bool) -> Vec<f64> {
 /// Graticule line positions for a geographic range.
 ///
 /// Picks the smallest step from a fixed ladder (1, 2, 5, 10, 15, 20, 30,
-/// 45, 60, 90) that produces at most `n` lines, then returns multiples of
-/// that step strictly inside `(min, max)`. Boundary values (-180/180 for
-/// longitude, -90/90 for latitude) are included when the range spans the
-/// full extent. Inputs are clamped to ±180, which also tames non-finite
-/// coordinates from degenerate projections.
+/// 45, 60, 90) that produces at most `n` *interior* lines, then returns
+/// multiples of that step strictly inside `(min, max)`. On top of those,
+/// a boundary value is included when the range touches it: -180 or 180
+/// for longitude, -90 or 90 for latitude — so the total can reach
+/// `n + 2`. The two ends of each boundary pair are alternatives, never
+/// both: -180 and 180 are the same meridian drawn twice, and a range
+/// spanning both poles gets the southern one. Inputs are clamped to
+/// ±180, which also tames non-finite coordinates from degenerate
+/// projections.
 pub fn graticule_breaks(min: f64, max: f64, n: usize) -> Vec<f64> {
     // Graticules never span more than the globe. max/min also tame non-finite
     // inputs (e.g. infinite coordinates from degenerate projections), which
@@ -1774,6 +1778,25 @@ mod tests {
     }
 
     #[test]
+    fn log10_minor_eight_per_decade_excluding_powers() {
+        approx_slice(
+            &log_minor_breaks(1.0, 10.0, 10.0),
+            &[2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            1e-12,
+        );
+        for (max, want) in [(100.0, 16), (1000.0, 24)] {
+            let m = log_minor_breaks(1.0, max, 10.0);
+            assert_eq!(m.len(), want, "1..{max}: {m:?}");
+            for power in [1.0, 10.0, 100.0, 1000.0] {
+                assert!(
+                    !m.iter().any(|&v| (v - power).abs() < 1e-9),
+                    "{m:?} contains the power {power}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn log_e_pretty_excludes_multipliers_above_base() {
         // The 1-2-5 scheme is base-10-specific; for base e the 5 would
         // land in the next decade near 2·e^(d+1). Only [1, 2] survive.
@@ -1863,6 +1886,34 @@ mod tests {
         let b = symlog_breaks(-100.0, -1.0, 5, 10.0);
         assert!(!b.is_empty());
         assert!(b.iter().all(|v| *v < 0.0));
+    }
+
+    #[test]
+    fn symlog_from_zero_is_zero_then_1_2_5_decades() {
+        let b = symlog_breaks(0.0, 100.0, 5, 10.0);
+        approx_slice(
+            &b,
+            &[
+                0.0, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0,
+            ],
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn symlog_minor_straddling_zero_skips_powers_and_zero() {
+        let m = symlog_minor_breaks(-20.0, 20.0, 10.0);
+        let has = |want: f64| m.iter().any(|&v| (v - want).abs() < 1e-9);
+        for want in [20.0, -20.0, 2.0, -9.0] {
+            assert!(has(want), "{m:?} missing {want}");
+        }
+        for not in [10.0, -10.0, 0.0] {
+            assert!(!has(not), "{m:?} should not contain {not}");
+        }
+        assert!(
+            m.windows(2).all(|w| w[0] < w[1]),
+            "{m:?} not strictly ascending"
+        );
     }
 
     // ── linear_minor_breaks_between ──
@@ -2418,6 +2469,67 @@ mod tests {
         );
     }
 
+    // ── temporal_breaks_from_f64 ──
+
+    #[test]
+    fn temporal_breaks_from_f64_date_five_years_is_yearly() {
+        let b = temporal_breaks_from_f64(0.0, 1825.0, TemporalUnit::Date, 5);
+        assert_eq!(b, vec![0.0, 365.0, 730.0, 1096.0, 1461.0]);
+        assert!(b.iter().all(|v| (0.0..=1825.0).contains(v)), "{b:?}");
+    }
+
+    #[test]
+    fn temporal_breaks_from_f64_date_five_months_is_monthly() {
+        // Regression: this span once produced 22 breaks.
+        let b = temporal_breaks_from_f64(0.0, 150.0, TemporalUnit::Date, 7);
+        assert_eq!(b, vec![0.0, 31.0, 59.0, 90.0, 120.0]);
+    }
+
+    #[test]
+    fn temporal_breaks_from_f64_date_one_week_is_daily() {
+        let b = temporal_breaks_from_f64(0.0, 7.0, TemporalUnit::Date, 7);
+        let want: Vec<f64> = (0..=7).map(|d| d as f64).collect();
+        assert_eq!(b, want);
+    }
+
+    #[test]
+    fn temporal_breaks_from_f64_datetime_one_day_is_three_hourly() {
+        let b = temporal_breaks_from_f64(0.0, DAY_US as f64, TemporalUnit::DateTime, 8);
+        let want: Vec<f64> = (0..=8).map(|h| (h * 3 * HOUR_US) as f64).collect();
+        assert_eq!(b, want);
+    }
+
+    #[test]
+    fn temporal_breaks_from_f64_datetime_one_hour_is_ten_minutely() {
+        let b = temporal_breaks_from_f64(0.0, HOUR_US as f64, TemporalUnit::DateTime, 6);
+        let want: Vec<f64> = (0..=6).map(|m| (m * 10 * MIN_US) as f64).collect();
+        assert_eq!(b, want);
+    }
+
+    #[test]
+    fn temporal_breaks_from_f64_time_two_hours_is_quarter_hourly() {
+        let b = temporal_breaks_from_f64(0.0, (2 * HOUR_NS) as f64, TemporalUnit::Time, 8);
+        let want: Vec<f64> = (0..=8).map(|q| (q * 15 * MIN_NS) as f64).collect();
+        assert_eq!(b, want);
+    }
+
+    #[test]
+    fn temporal_breaks_from_f64_time_five_minutes_is_minutely() {
+        let b = temporal_breaks_from_f64(0.0, (5 * MIN_NS) as f64, TemporalUnit::Time, 5);
+        let want: Vec<f64> = (0..=5).map(|m| (m * MIN_NS) as f64).collect();
+        assert_eq!(b, want);
+    }
+
+    #[test]
+    fn temporal_breaks_from_f64_time_full_day_stops_before_midnight() {
+        // A time of day never reaches 24:00 — advancing onto DAY_NS is
+        // rejected, so the last break is 21:00.
+        let b = temporal_breaks_from_f64(0.0, DAY_NS as f64, TemporalUnit::Time, 8);
+        let want: Vec<f64> = (0..8).map(|h| (h * 3 * HOUR_NS) as f64).collect();
+        assert_eq!(b, want);
+        assert!(!b.contains(&(DAY_NS as f64)));
+    }
+
     // ─── Integer breaks ──────────────────────────────────────────────────────
 
     #[test]
@@ -2458,6 +2570,18 @@ mod tests {
     fn integer_breaks_small_range_gives_consecutive_integers() {
         let breaks = integer_breaks(0.0, 5.0, 10, true);
         assert_eq!(breaks, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn integer_breaks_non_pretty_extends_one_step_past_each_end() {
+        // Range wider than n takes the evenly-spaced path, which starts one
+        // step below min and runs one step past max.
+        let breaks = integer_breaks(0.0, 100.0, 5, false);
+        assert_eq!(
+            breaks,
+            vec![-25.0, 0.0, 25.0, 50.0, 75.0, 100.0, 125.0],
+            "{breaks:?}"
+        );
     }
 
     #[test]
@@ -2506,6 +2630,31 @@ mod tests {
     #[test]
     fn graticule_breaks_empty_for_zero_range() {
         assert!(graticule_breaks(50.0, 50.0, 7).is_empty());
+    }
+
+    #[test]
+    fn graticule_breaks_full_latitude_range() {
+        // 3 interior lines plus the southern-pole boundary: the ±90
+        // block adds min *or* max (else-if), not both. Pinned as the
+        // ported ggsql behavior; the doc above explains the reasoning.
+        let breaks = graticule_breaks(-90.0, 90.0, 3);
+        assert_eq!(breaks, vec![-90.0, -45.0, 0.0, 45.0]);
+        // Denser target: 9 interior lines at step 20, plus the -90
+        // boundary again (never +90).
+        let breaks = graticule_breaks(-90.0, 90.0, 10);
+        assert_eq!(
+            breaks,
+            vec![-90.0, -80.0, -60.0, -40.0, -20.0, 0.0, 20.0, 40.0, 60.0, 80.0]
+        );
+    }
+
+    #[test]
+    fn graticule_breaks_antimeridian_added_once() {
+        // -180 and 180 are the same meridian: a world span gets -180
+        // only, and the else-if keeps 180 out.
+        let breaks = graticule_breaks(-180.0, 180.0, 7);
+        assert!(breaks.contains(&-180.0));
+        assert!(!breaks.contains(&180.0));
     }
 
     #[test]

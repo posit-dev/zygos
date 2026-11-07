@@ -327,7 +327,8 @@ mod tests {
             for v in [-1000.0, -1.0, 0.0, 1.0, 1000.0] {
                 let f = transform_forward(v, kind);
                 let inv = transform_inverse(f, kind);
-                approx(inv, v, 1e-6);
+                // Relative tolerance; floored at 1 so v = 0 stays meaningful.
+                approx(inv, v, 1e-10 * f64::abs(v).max(1.0));
             }
         }
     }
@@ -344,12 +345,154 @@ mod tests {
         // For large |x|, asinh(x/2) ≈ ln(x), so PseudoLog10(x) ≈ log10(x).
         let f = transform_forward(1000.0, TransformKind::PseudoLog10);
         let log10_1000 = 1000f64.log10();
-        // Within ~5% — pseudo-log diverges from log10 by a constant
-        // offset (ln 2 / ln 10).
+        // asinh(x/2) = ln(x/2 + √(x²/4 + 1)) → ln(x) with no constant
+        // offset; at x = 1000 the gap is ~2e-7.
         assert!(
-            (f - log10_1000).abs() < 0.5,
+            (f - log10_1000).abs() < 1e-6,
             "pseudolog10(1000) = {f}, log10(1000) = {log10_1000}"
         );
+    }
+
+    #[test]
+    fn pseudo_log_tracks_log_for_large_values_in_every_base() {
+        for v in [1e3, 1e4, 1e5] {
+            approx(
+                transform_forward(v, TransformKind::PseudoLog10),
+                v.log10(),
+                0.01,
+            );
+        }
+        for v in [64.0, 1024.0, 65536.0] {
+            approx(
+                transform_forward(v, TransformKind::PseudoLog2),
+                f64::log2(v),
+                0.05,
+            );
+        }
+        for v in [100.0, 1000.0, 1e4] {
+            approx(
+                transform_forward(v, TransformKind::PseudoLog),
+                f64::ln(v),
+                0.02,
+            );
+        }
+    }
+
+    #[test]
+    fn pseudo_log_is_not_asinh() {
+        // PseudoLog is asinh(x / 2) (σ = 0.5 convention), not asinh(x).
+        approx(
+            transform_forward(10.0, TransformKind::PseudoLog10),
+            5f64.asinh() / 10f64.ln(),
+            1e-12,
+        );
+        approx(
+            transform_forward(10.0, TransformKind::PseudoLog10),
+            1.004,
+            1e-3,
+        );
+        approx(transform_forward(10.0, TransformKind::Asinh), 2.998, 1e-3);
+        // Natural base: same log base, different scaling inside asinh, so
+        // the two diverge — by ln 2 far from zero.
+        for v in [1.0, 10.0, 100.0] {
+            let pl = transform_forward(v, TransformKind::PseudoLog);
+            let ash = transform_forward(v, TransformKind::Asinh);
+            assert!(
+                ash - pl > 0.3,
+                "PseudoLog({v}) = {pl} should diverge from Asinh({v}) = {ash}"
+            );
+        }
+        approx(
+            transform_forward(1e6, TransformKind::Asinh)
+                - transform_forward(1e6, TransformKind::PseudoLog),
+            2f64.ln(),
+            1e-9,
+        );
+    }
+
+    #[test]
+    fn symmetric_transforms_are_odd_through_zero() {
+        for kind in [
+            TransformKind::Asinh,
+            TransformKind::PseudoLog,
+            TransformKind::PseudoLog2,
+            TransformKind::PseudoLog10,
+        ] {
+            assert_eq!(transform_forward(0.0, kind), 0.0, "{kind:?}");
+            for x in [0.1, 1.0, 10.0, 100.0, 1000.0] {
+                approx(
+                    transform_forward(-x, kind),
+                    -transform_forward(x, kind),
+                    1e-12,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn asinh_approaches_log_2x() {
+        approx(
+            transform_forward(1000.0, TransformKind::Asinh),
+            2000f64.ln(),
+            1e-6,
+        );
+    }
+
+    #[test]
+    fn exp_exact_values() {
+        approx(transform_forward(-1.0, TransformKind::Exp10), 0.1, 1e-12);
+        approx(transform_forward(-1.0, TransformKind::Exp2), 0.5, 1e-12);
+        approx(transform_forward(2.0, TransformKind::Exp2), 4.0, 1e-12);
+        approx(
+            transform_forward(2.0, TransformKind::Exp),
+            std::f64::consts::E.powi(2),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn exp_forward_is_log_inverse() {
+        for (exp, log) in [
+            (TransformKind::Exp10, TransformKind::Log10),
+            (TransformKind::Exp2, TransformKind::Log2),
+            (TransformKind::Exp, TransformKind::Log),
+        ] {
+            for v in [-2.0, -0.5, 0.0, 1.0, 3.5] {
+                let a = transform_forward(v, exp);
+                let b = transform_inverse(v, log);
+                approx(a, b, 1e-12 * a.abs().max(1.0));
+            }
+        }
+    }
+
+    #[test]
+    fn negative_and_sub_unit_inputs() {
+        approx(transform_forward(-2.0, TransformKind::Square), 4.0, 1e-12);
+        approx(transform_forward(0.1, TransformKind::Log10), -1.0, 1e-12);
+        approx(transform_forward(0.5, TransformKind::Log2), -1.0, 1e-12);
+    }
+
+    #[test]
+    fn allowed_domain_every_kind() {
+        let positive = (0.0, f64::INFINITY);
+        let open = (f64::NEG_INFINITY, f64::INFINITY);
+        for (kind, want) in [
+            (TransformKind::Log10, positive),
+            (TransformKind::Log2, positive),
+            (TransformKind::Log, positive),
+            (TransformKind::Sqrt, positive),
+            (TransformKind::Identity, open),
+            (TransformKind::Square, open),
+            (TransformKind::Exp10, open),
+            (TransformKind::Exp2, open),
+            (TransformKind::Exp, open),
+            (TransformKind::Asinh, open),
+            (TransformKind::PseudoLog, open),
+            (TransformKind::PseudoLog2, open),
+            (TransformKind::PseudoLog10, open),
+        ] {
+            assert_eq!(transform_allowed_domain(kind), want, "{kind:?}");
+        }
     }
 
     #[test]
@@ -469,6 +612,31 @@ mod tests {
         );
         approx(lo, 10f64.powf(-0.1), 1e-9);
         approx(hi, 1000.0, 1e-9);
+    }
+
+    #[test]
+    fn expand_selective_pads_in_transformed_units() {
+        // mult / add are measured on the transformed axis, per end. The
+        // pseudo-log range crosses zero on purpose.
+        let mult = (0.05, 0.1);
+        let add = (0.5, 0.25);
+        for (kind, (min, max)) in [
+            (TransformKind::Log10, (1.0, 1000.0)),
+            (TransformKind::Log2, (1.0, 1000.0)),
+            (TransformKind::Log, (1.0, 1000.0)),
+            (TransformKind::Exp10, (1.5, 2.0)),
+            (TransformKind::Exp2, (1.5, 2.0)),
+            (TransformKind::Exp, (1.5, 2.0)),
+            (TransformKind::PseudoLog, (-50.0, 1000.0)),
+            (TransformKind::PseudoLog2, (-50.0, 1000.0)),
+            (TransformKind::PseudoLog10, (-50.0, 1000.0)),
+        ] {
+            let (lo, hi) = expand_range_transformed_selective(min, max, mult, add, kind);
+            let f = |v: f64| transform_forward(v, kind);
+            let span = f(max) - f(min);
+            approx(f(min) - f(lo), mult.0 * span + add.0, 1e-9);
+            approx(f(hi) - f(max), mult.1 * span + add.1, 1e-9);
+        }
     }
 
     #[test]
