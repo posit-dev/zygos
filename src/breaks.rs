@@ -378,6 +378,21 @@ fn pretty_breaks_simple(min: f64, max: f64, n: usize) -> Vec<f64> {
 
 // ─── Log breaks (1-2-5 across decades; powers-only when many decades) ───────
 
+/// The base break placement actually uses, given the transform's base.
+/// Breaks are read as domain labels, so they sit on powers that are
+/// round numbers — which powers of a non-integer base never are (e¹
+/// labels as 2.718…). Any base that isn't an integer ≥ 2 therefore
+/// breaks on the base-10 1-2-5 pattern regardless of the transform
+/// math: a natural-log axis reads in decades, just like the Asinh /
+/// baseless-PseudoLog arms already do in `scale_type`.
+fn break_label_base(base: f64) -> f64 {
+    if base >= 2.0 && base.fract() == 0.0 {
+        base
+    } else {
+        10.0
+    }
+}
+
 /// "Pretty" log-spaced major breaks: powers of `base` with optional
 /// 1 / 2 / 5 multipliers when the span is ≤ a few decades. Used for
 /// log-transformed continuous scales.
@@ -385,7 +400,9 @@ fn pretty_breaks_simple(min: f64, max: f64, n: usize) -> Vec<f64> {
 /// - `min` / `max`: the data range in **input** space (must be > 0).
 /// - `n_target`: target number of breaks (informational; the algorithm
 ///   chooses a multiplier set that fits the span).
-/// - `base`: log base (10, 2, or `e` typical).
+/// - `base`: log base (10 or 2 typical). Non-integer bases (`e` among
+///   them) place breaks as if the base were 10 — see
+///   [`break_label_base`].
 ///
 /// Returns the breaks in input space, sorted, all within `[min, max]`.
 /// Empty for non-positive / non-finite / degenerate inputs.
@@ -394,6 +411,7 @@ pub fn log_pretty_breaks(min: f64, max: f64, n_target: usize, base: f64) -> Vec<
     {
         return Vec::new();
     }
+    let base = break_label_base(base);
     let log_min = min.log(base);
     let log_max = max.log(base);
     let n_decades = log_max - log_min;
@@ -468,17 +486,18 @@ fn symlog_branch_floor(hi: f64, n_target: usize, base: f64) -> f64 {
 /// `[min, max]`. The canonical log-axis "subticks between decades" look.
 ///
 /// The multipliers are the integers strictly below `base` (for base 10:
-/// `2, 3, …, 9`; for base e: just `2`). When no integer fits — e.g.
-/// base 2 — the geometric midpoint `√base · base^d = base^(d+½)` is used
-/// instead, which sits visually centered on a log axis.
+/// `2, 3, …, 9`). When no integer fits — e.g. base 2 — the geometric
+/// midpoint `√base · base^d = base^(d+½)` is used instead, which sits
+/// visually centered on a log axis. Non-integer bases place minors as if
+/// the base were 10 (see [`break_label_base`]), so a natural-log axis
+/// gets the familiar 2–9 subticks rather than a lone `2·e^d` per decade.
 pub fn log_minor_breaks(min: f64, max: f64, base: f64) -> Vec<f64> {
     if !min.is_finite() || !max.is_finite() || min <= 0.0 || max <= 0.0 || min >= max || base <= 1.0
     {
         return Vec::new();
     }
-    // Integer multiples of base^d strictly inside the decade. Comparing
-    // against `base` directly (not its rounded value) keeps non-integer
-    // bases correct: base e yields only 2, base 2.4 still yields 2.
+    let base = break_label_base(base);
+    // Integer multiples of base^d strictly inside the decade.
     let mults: Vec<f64> = (2..).map(|k| k as f64).take_while(|&k| k < base).collect();
     // No integer fits (e.g. base 2): use the geometric midpoint instead.
     let mults = if mults.is_empty() {
@@ -586,8 +605,22 @@ pub fn symlog_breaks(min: f64, max: f64, n: usize, base: f64) -> Vec<f64> {
 /// decade span a typical major-break target produces.
 const MINOR_BRANCH_BREAKS: usize = 5;
 
+/// Magnitude below which a symlog transform is essentially linear, so
+/// log-style minor subdivisions stop there. The symlog transforms wired
+/// in this crate all have unit scale — Asinh is `asinh(x)`, the
+/// PseudoLog family is `asinh(x/2) / ln(base)` — and asinh(x) ≈ x once
+/// |x| is below about 1. Subdividing sub-unit "decades" on a log
+/// pattern bunches gridlines into a near-solid band around zero while
+/// carrying no log-scale information, so minors floor at the decade
+/// containing the linear threshold. Inside that region the axis gets
+/// no minors.
+const SYMLOG_MINOR_LINEAR_FLOOR: f64 = 1.0;
+
 /// Minor breaks for a symmetric-log-like transform. Mirrors
-/// [`log_minor_breaks`] on each branch and stitches.
+/// [`log_minor_breaks`] on each branch and stitches. Minors stop at
+/// magnitude [`SYMLOG_MINOR_LINEAR_FLOOR`]: closer to zero the
+/// transform behaves linearly and log-style subdivisions only add
+/// density.
 pub fn symlog_minor_breaks(min: f64, max: f64, base: f64) -> Vec<f64> {
     if !min.is_finite() || !max.is_finite() || min >= max || base <= 1.0 {
         return Vec::new();
@@ -598,7 +631,7 @@ pub fn symlog_minor_breaks(min: f64, max: f64, base: f64) -> Vec<f64> {
         } else {
             min
         };
-        return log_minor_breaks(lo, max, base);
+        return log_minor_breaks(lo.max(SYMLOG_MINOR_LINEAR_FLOOR), max, base);
     }
     if max <= 0.0 {
         let lo = if max == 0.0 {
@@ -606,18 +639,18 @@ pub fn symlog_minor_breaks(min: f64, max: f64, base: f64) -> Vec<f64> {
         } else {
             -max
         };
-        let pos = log_minor_breaks(lo, -min, base);
+        let pos = log_minor_breaks(lo.max(SYMLOG_MINOR_LINEAR_FLOOR), -min, base);
         // pos ascends in magnitude; reverse + negate to ascend in
         // negative-branch values.
         return pos.into_iter().rev().map(|v| -v).collect();
     }
     let neg = log_minor_breaks(
-        symlog_branch_floor(-min, MINOR_BRANCH_BREAKS, base),
+        symlog_branch_floor(-min, MINOR_BRANCH_BREAKS, base).max(SYMLOG_MINOR_LINEAR_FLOOR),
         -min,
         base,
     );
     let pos = log_minor_breaks(
-        symlog_branch_floor(max, MINOR_BRANCH_BREAKS, base),
+        symlog_branch_floor(max, MINOR_BRANCH_BREAKS, base).max(SYMLOG_MINOR_LINEAR_FLOOR),
         max,
         base,
     );
@@ -1753,28 +1786,22 @@ mod tests {
     }
 
     #[test]
-    fn log_e_minor_only_double_per_decade() {
-        // 2 is the only integer strictly below e, so one minor per decade.
+    fn log_e_minor_falls_back_to_base_10() {
+        // Powers of e aren't round numbers, so a natural-log axis gets
+        // the base-10 2..9 subticks, not a lone `2·e^d` per decade.
         let e = std::f64::consts::E;
         let m = log_minor_breaks(1.0, e.powi(3), e);
-        for d in 0..3 {
-            let want = 2.0 * e.powi(d);
-            assert!(
-                m.iter().any(|&v| (v - want).abs() < 1e-9),
-                "{m:?} missing {want}"
-            );
+        assert_eq!(m, log_minor_breaks(1.0, e.powi(3), 10.0));
+        for v in [2.0, 5.0, 9.0] {
+            assert!(m.contains(&v), "{m:?} missing {v}");
         }
-        assert_eq!(m.len(), 3, "{m:?}");
     }
 
     #[test]
-    fn log_minor_non_integer_base_uses_actual_base_not_rounded() {
-        // 2 < 2.4, so one minor per decade — rounding to 2 would drop it.
-        let m = log_minor_breaks(1.0, 2.4f64.powi(2), 2.4);
-        assert!(
-            m.iter().any(|&v| (v - 2.0).abs() < 1e-12),
-            "{m:?} missing 2"
-        );
+    fn log_minor_non_integer_base_falls_back_to_base_10() {
+        // Base 2.4's powers aren't round either; breaks ride base 10.
+        let m = log_minor_breaks(1.0, 2.4f64.powi(3), 2.4);
+        assert_eq!(m, log_minor_breaks(1.0, 2.4f64.powi(3), 10.0));
     }
 
     #[test]
@@ -1797,19 +1824,15 @@ mod tests {
     }
 
     #[test]
-    fn log_e_pretty_excludes_multipliers_above_base() {
-        // The 1-2-5 scheme is base-10-specific; for base e the 5 would
-        // land in the next decade near 2·e^(d+1). Only [1, 2] survive.
+    fn log_e_pretty_falls_back_to_base_10() {
+        // Powers of e can't be round labels, so a natural-log axis gets
+        // the decade 1-2-5 pattern: 1, 2, 5, 10, 20 — not 1, e, e², …
         let e = std::f64::consts::E;
-        let b = log_pretty_breaks(1.0, e.powi(3), 6, e);
-        for v in &b {
-            let frac = v.log(e).fract();
-            let on_power = frac.abs() < 1e-9;
-            let on_double = (v / e.powi(v.log(e).floor() as i32) - 2.0).abs() < 1e-9;
-            assert!(on_power || on_double, "unexpected break {v} in {b:?}");
+        let b = log_pretty_breaks(1.0, 200.0, 6, e);
+        assert_eq!(b, log_pretty_breaks(1.0, 200.0, 6, 10.0));
+        for v in [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0] {
+            assert!(b.contains(&v), "{b:?} missing {v}");
         }
-        assert!(b.iter().any(|&v| (v - 1.0).abs() < 1e-9));
-        assert!(b.iter().any(|&v| (v - 2.0).abs() < 1e-9));
     }
 
     // ── sqrt_breaks ──
@@ -1914,6 +1937,28 @@ mod tests {
             m.windows(2).all(|w| w[0] < w[1]),
             "{m:?} not strictly ascending"
         );
+    }
+
+    #[test]
+    fn symlog_minor_stops_at_linear_region() {
+        // The transform is linear for |x| ≲ 1, so log-style minors stop
+        // at magnitude 1 instead of bunching into a solid band at zero.
+        let m = symlog_minor_breaks(-100.0, 100.0, 10.0);
+        assert!(
+            m.iter().all(|v| v.abs() >= 1.0),
+            "minors inside the linear region: {m:?}"
+        );
+        let has = |want: f64| m.iter().any(|&v| (v - want).abs() < 1e-9);
+        for want in [2.0, 9.0, -2.0, 20.0, 90.0, -90.0] {
+            assert!(has(want), "{m:?} missing {want}");
+        }
+    }
+
+    #[test]
+    fn symlog_minor_branch_entirely_linear_has_no_minors() {
+        // A domain fully inside the linear region gets no log minors.
+        let m = symlog_minor_breaks(-0.5, 0.8, 10.0);
+        assert!(m.is_empty(), "{m:?}");
     }
 
     // ── linear_minor_breaks_between ──

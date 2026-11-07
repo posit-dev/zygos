@@ -162,10 +162,11 @@ pub fn continuous_map(
 /// to `Value::Number` for the formatter to handle. Transform-aware:
 /// log scales emit the 1-2-5 pattern across decades; sqrt scales emit
 /// Wilkinson-Extended in sqrt space; symmetric-log scales (Asinh /
-/// PseudoLog) emit log breaks on each branch around zero. Asinh and the
-/// baseless PseudoLog place their breaks in decades: both grow like a
-/// natural log, but powers of e would label as 2.718…, so the 1-2-5
-/// pattern rides on base 10 like the dedicated PseudoLog10 kind.
+/// PseudoLog) emit log breaks on each branch around zero. Natural-log
+/// (`Log`), Asinh and the baseless PseudoLog place their breaks in
+/// decades regardless of the transform base: they grow like a natural
+/// log, but powers of e would label as 2.718…, so the 1-2-5 pattern
+/// rides on base 10 like the dedicated PseudoLog10 kind.
 pub fn continuous_breaks(
     input_range: Option<&InputRange>,
     transform: &Transform,
@@ -842,6 +843,26 @@ mod tests {
                 "{kind:?} should break on the base-10 1-2-5 pattern"
             );
         }
+    }
+
+    #[test]
+    fn natural_log_breaks_fall_on_decades() {
+        // A `Log` (base e) transform still labels in base-10 1-2-5
+        // decades — powers of e would read as 2.718…
+        let range = InputRange::Continuous {
+            min: 1.0,
+            max: 200.0,
+        };
+        let t = Transform::of(TransformKind::Log);
+        let breaks: Vec<f64> = continuous_breaks(Some(&range), &t, 6)
+            .iter()
+            .filter_map(|v| v.as_number())
+            .collect();
+        assert_eq!(
+            breaks,
+            vec![1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0],
+            "ln scale should break on the base-10 1-2-5 pattern"
+        );
     }
 
     #[test]

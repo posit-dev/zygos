@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `log_pretty_breaks` / `log_minor_breaks` no longer place breaks on
+  powers of a non-integer base (natural log among them): powers of e
+  label as 2.718… and can never be round, so any base that isn't an
+  integer ≥ 2 now breaks on the base-10 1-2-5 pattern. A `ln` axis
+  reads 1, 2, 5, 10, 20, … with the familiar 2–9 minor subticks,
+  matching what the Asinh / baseless-PseudoLog arms already did.
+- `symlog_minor_breaks` no longer bunches log-style subdivisions into a
+  near-solid band around zero: the symlog transforms (Asinh, the
+  `asinh(x/2)` PseudoLog family) behave linearly for |x| ≲ 1, so minors
+  now stop at magnitude 1 — the decade containing the linear threshold —
+  instead of subdividing every sub-decade down to the branch floor.
 - `default_label` / `LabelSpec::label` with unpinned precision no
   longer print accumulated floating-point noise: values are snapped
   through a 12-significant-figure round trip before shortest-round-trip
