@@ -402,7 +402,7 @@ fn break_label_base(base: f64) -> f64 {
 ///   chooses a multiplier set that fits the span).
 /// - `base`: log base (10 or 2 typical). Non-integer bases (`e` among
 ///   them) place breaks as if the base were 10 — see
-///   [`break_label_base`].
+///   `break_label_base`.
 ///
 /// Returns the breaks in input space, sorted, all within `[min, max]`.
 /// Empty for non-positive / non-finite / degenerate inputs.
@@ -489,7 +489,7 @@ fn symlog_branch_floor(hi: f64, n_target: usize, base: f64) -> f64 {
 /// `2, 3, …, 9`). When no integer fits — e.g. base 2 — the geometric
 /// midpoint `√base · base^d = base^(d+½)` is used instead, which sits
 /// visually centered on a log axis. Non-integer bases place minors as if
-/// the base were 10 (see [`break_label_base`]), so a natural-log axis
+/// the base were 10 (see `break_label_base`), so a natural-log axis
 /// gets the familiar 2–9 subticks rather than a lone `2·e^d` per decade.
 pub fn log_minor_breaks(min: f64, max: f64, base: f64) -> Vec<f64> {
     if !min.is_finite() || !max.is_finite() || min <= 0.0 || max <= 0.0 || min >= max || base <= 1.0
@@ -618,7 +618,7 @@ const SYMLOG_MINOR_LINEAR_FLOOR: f64 = 1.0;
 
 /// Minor breaks for a symmetric-log-like transform. Mirrors
 /// [`log_minor_breaks`] on each branch and stitches. Minors stop at
-/// magnitude [`SYMLOG_MINOR_LINEAR_FLOOR`]: closer to zero the
+/// magnitude `SYMLOG_MINOR_LINEAR_FLOOR`: closer to zero the
 /// transform behaves linearly and log-style subdivisions only add
 /// density.
 pub fn symlog_minor_breaks(min: f64, max: f64, base: f64) -> Vec<f64> {
