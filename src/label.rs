@@ -693,11 +693,11 @@ fn title_case(s: &str) -> String {
 /// `precision` pins the decimal count for numbers (from
 /// [`shared_precision`]); `None` renders the shortest round-trip form,
 /// so integers print without a trailing `.0`. Temporal values render
-/// as ISO calendar text; [`Value::Null`], [`Value::Linetype`] and
-/// [`Value::Geometry`] render as `None`.
+/// as ISO calendar text; [`Value::Null`], [`Value::Linetype`],
+/// [`Value::Geometry`] and [`Value::Brush`] render as `None`.
 pub fn default_label(value: &Value, precision: Option<usize>) -> Option<String> {
     match value {
-        Value::Null | Value::Linetype(_) | Value::Geometry(_) => None,
+        Value::Null | Value::Linetype(_) | Value::Geometry(_) | Value::Brush(_) => None,
         Value::Number(n) | Value::Relative(n) => Some(format_number(*n, precision)),
         Value::String(s) => Some(s.to_string()),
         Value::Bool(b) => Some(if *b { "true" } else { "false" }.to_string()),

@@ -25,6 +25,7 @@
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use crate::brush::{Brush, Gradient, GradientKind, ImageBrush, ImageData, ImageSampler};
 use crate::color::Color;
 use crate::geometry::Geometry;
 
@@ -311,6 +312,14 @@ pub enum Value {
     /// maps each coordinate through bound x/y scales.
     Geometry(Arc<Geometry>),
 
+    /// A paint brush — solid color, gradient, or image pattern (see
+    /// [`crate::brush`]). Carried by `Arc` so cloning a column of brushes
+    /// does not duplicate per-row image buffers. Opaque to scales:
+    /// brushes flow through constant / raw channels, which either bypass
+    /// scales or pass values through untouched; no scale type maps
+    /// *to* a brush yet.
+    Brush(Arc<Brush>),
+
     /// A factor of a consumer-defined base quantity, e.g. `0.8` for
     /// 0.8 × a resolved font size. What it multiplies is defined by the
     /// consumer (in hephaestus, the geom's channel). Opaque to scales:
@@ -408,6 +417,16 @@ impl Value {
         }
     }
 
+    /// Borrow the underlying brush, if this value is a `Value::Brush`.
+    /// Returns `None` for every other variant.
+    pub fn as_brush(&self) -> Option<&Brush> {
+        if let Value::Brush(b) = self {
+            Some(b)
+        } else {
+            None
+        }
+    }
+
     /// Read as a factor if this is a [`Value::Relative`]; else `None`.
     pub fn as_relative(&self) -> Option<f64> {
         if let Value::Relative(f) = *self {
@@ -440,6 +459,9 @@ impl Value {
                         .all(|(x, y)| linetype_step_key_eq(x, y))
             }
             (Geometry(a), Geometry(b)) => Arc::ptr_eq(a, b),
+            // Pointer identity is a shortcut for value equality; unequal
+            // pointers fall through to structural comparison.
+            (Brush(a), Brush(b)) => Arc::ptr_eq(a, b) || brush_key_eq(a, b),
             (Relative(a), Relative(b)) => canonical_f64_bits(*a) == canonical_f64_bits(*b),
             _ => false,
         }
@@ -478,6 +500,11 @@ impl Value {
                 // Pointer identity matches `key_eq`: same Arc = same row.
                 (Arc::as_ptr(g) as usize).hash(state);
             }
+            Value::Brush(b) => {
+                // Structural hash — consistent with `key_eq`, where
+                // pointer-equal brushes are also structurally equal.
+                brush_key_hash(b, state);
+            }
             Value::Relative(f) => canonical_f64_bits(*f).hash(state),
         }
     }
@@ -503,6 +530,142 @@ pub fn linetype_step_key_hash<H: Hasher>(step: &LinetypeStep, state: &mut H) {
         LinetypeStep::Dash(f) | LinetypeStep::Gap(f) => canonical_f64_bits(*f).hash(state),
         LinetypeStep::Marker(s) => (**s).hash(state),
     }
+}
+
+/// Structural equality for [`Brush`]es (peniko's `Brush` is neither `Eq`
+/// nor `Hash`). Solids compare by color; gradients by kind coordinates,
+/// stops (canonical f32 bits, same as `Color`), extend, and interpolation
+/// parameters; images by [`Blob`](crate::brush::Blob) id plus dimensions,
+/// format, alpha type, and sampler settings. NaN / -0 are canonicalised
+/// in every float comparison.
+pub fn brush_key_eq(a: &Brush, b: &Brush) -> bool {
+    match (a, b) {
+        (Brush::Solid(x), Brush::Solid(y)) => x == y,
+        (Brush::Gradient(x), Brush::Gradient(y)) => gradient_key_eq(x, y),
+        (Brush::Image(x), Brush::Image(y)) => image_key_eq(x, y),
+        _ => false,
+    }
+}
+
+/// Deterministic hash for a [`Brush`]. Mirrors [`brush_key_eq`].
+pub fn brush_key_hash<H: Hasher>(brush: &Brush, state: &mut H) {
+    std::mem::discriminant(brush).hash(state);
+    match brush {
+        Brush::Solid(c) => {
+            let [r, g, b, a] = c.components;
+            canonical_f32_bits(r).hash(state);
+            canonical_f32_bits(g).hash(state);
+            canonical_f32_bits(b).hash(state);
+            canonical_f32_bits(a).hash(state);
+        }
+        Brush::Gradient(g) => gradient_key_hash(g, state),
+        Brush::Image(i) => image_key_hash(i, state),
+    }
+}
+
+fn gradient_key_eq(a: &Gradient, b: &Gradient) -> bool {
+    fn point_eq(a: peniko::kurbo::Point, b: peniko::kurbo::Point) -> bool {
+        canonical_f64_bits(a.x) == canonical_f64_bits(b.x)
+            && canonical_f64_bits(a.y) == canonical_f64_bits(b.y)
+    }
+    let kind_eq = match (&a.kind, &b.kind) {
+        (GradientKind::Linear(x), GradientKind::Linear(y)) => {
+            point_eq(x.start, y.start) && point_eq(x.end, y.end)
+        }
+        (GradientKind::Radial(x), GradientKind::Radial(y)) => {
+            point_eq(x.start_center, y.start_center)
+                && point_eq(x.end_center, y.end_center)
+                && canonical_f32_bits(x.start_radius) == canonical_f32_bits(y.start_radius)
+                && canonical_f32_bits(x.end_radius) == canonical_f32_bits(y.end_radius)
+        }
+        (GradientKind::Sweep(x), GradientKind::Sweep(y)) => {
+            point_eq(x.center, y.center)
+                && canonical_f32_bits(x.start_angle) == canonical_f32_bits(y.start_angle)
+                && canonical_f32_bits(x.end_angle) == canonical_f32_bits(y.end_angle)
+        }
+        _ => false,
+    };
+    kind_eq
+        && a.extend == b.extend
+        && a.interpolation_cs == b.interpolation_cs
+        && a.hue_direction == b.hue_direction
+        && a.interpolation_alpha_space == b.interpolation_alpha_space
+        && a.stops.len() == b.stops.len()
+        && a.stops.iter().zip(b.stops.iter()).all(|(x, y)| {
+            canonical_f32_bits(x.offset) == canonical_f32_bits(y.offset)
+                && x.color.cs == y.color.cs
+                && x.color
+                    .components
+                    .iter()
+                    .zip(y.color.components.iter())
+                    .all(|(u, v)| canonical_f32_bits(*u) == canonical_f32_bits(*v))
+        })
+}
+
+fn gradient_key_hash<H: Hasher>(g: &Gradient, state: &mut H) {
+    fn point_hash<H: Hasher>(p: peniko::kurbo::Point, state: &mut H) {
+        canonical_f64_bits(p.x).hash(state);
+        canonical_f64_bits(p.y).hash(state);
+    }
+    std::mem::discriminant(&g.kind).hash(state);
+    match &g.kind {
+        GradientKind::Linear(l) => {
+            point_hash(l.start, state);
+            point_hash(l.end, state);
+        }
+        GradientKind::Radial(r) => {
+            point_hash(r.start_center, state);
+            point_hash(r.end_center, state);
+            canonical_f32_bits(r.start_radius).hash(state);
+            canonical_f32_bits(r.end_radius).hash(state);
+        }
+        GradientKind::Sweep(s) => {
+            point_hash(s.center, state);
+            canonical_f32_bits(s.start_angle).hash(state);
+            canonical_f32_bits(s.end_angle).hash(state);
+        }
+    }
+    std::mem::discriminant(&g.extend).hash(state);
+    std::mem::discriminant(&g.interpolation_cs).hash(state);
+    std::mem::discriminant(&g.hue_direction).hash(state);
+    std::mem::discriminant(&g.interpolation_alpha_space).hash(state);
+    (g.stops.len() as u64).hash(state);
+    for stop in g.stops.iter() {
+        canonical_f32_bits(stop.offset).hash(state);
+        std::mem::discriminant(&stop.color.cs).hash(state);
+        for c in stop.color.components {
+            canonical_f32_bits(c).hash(state);
+        }
+    }
+}
+
+fn image_key_eq(a: &ImageBrush, b: &ImageBrush) -> bool {
+    fn data_eq(a: &ImageData, b: &ImageData) -> bool {
+        a.data.id() == b.data.id()
+            && a.format == b.format
+            && a.alpha_type == b.alpha_type
+            && a.width == b.width
+            && a.height == b.height
+    }
+    fn sampler_eq(a: &ImageSampler, b: &ImageSampler) -> bool {
+        a.x_extend == b.x_extend
+            && a.y_extend == b.y_extend
+            && a.quality == b.quality
+            && canonical_f32_bits(a.alpha) == canonical_f32_bits(b.alpha)
+    }
+    data_eq(&a.image, &b.image) && sampler_eq(&a.sampler, &b.sampler)
+}
+
+fn image_key_hash<H: Hasher>(i: &ImageBrush, state: &mut H) {
+    i.image.data.id().hash(state);
+    std::mem::discriminant(&i.image.format).hash(state);
+    std::mem::discriminant(&i.image.alpha_type).hash(state);
+    i.image.width.hash(state);
+    i.image.height.hash(state);
+    std::mem::discriminant(&i.sampler.x_extend).hash(state);
+    std::mem::discriminant(&i.sampler.y_extend).hash(state);
+    std::mem::discriminant(&i.sampler.quality).hash(state);
+    canonical_f32_bits(i.sampler.alpha).hash(state);
 }
 
 // `From<T> for Value` for the common scalar inputs.
@@ -567,6 +730,36 @@ impl From<Geometry> for Value {
 impl From<Arc<Geometry>> for Value {
     fn from(g: Arc<Geometry>) -> Self {
         Value::Geometry(g)
+    }
+}
+
+// Brushes arrive either by value (auto-wrapped in an Arc) or as a shared
+// Arc (zero-cost when the same brush repeats across many rows).
+//
+// Note: a brush constant on a channel with a *bound color scale* maps
+// through `Scale::map`, which returns `Value::Null` for inputs it can't
+// handle — the fill silently resolves to nothing. Brushes belong on
+// constant / raw channels (in hephaestus, the `Raw(...)` wrapper), the
+// same contract raw colors have today; a data-driven brush scale is a
+// separate, later design.
+impl From<Brush> for Value {
+    fn from(b: Brush) -> Self {
+        Value::Brush(Arc::new(b))
+    }
+}
+impl From<Gradient> for Value {
+    fn from(g: Gradient) -> Self {
+        Value::Brush(Arc::new(Brush::Gradient(g)))
+    }
+}
+impl From<ImageBrush> for Value {
+    fn from(i: ImageBrush) -> Self {
+        Value::Brush(Arc::new(Brush::Image(i)))
+    }
+}
+impl From<Arc<Brush>> for Value {
+    fn from(b: Arc<Brush>) -> Self {
+        Value::Brush(b)
     }
 }
 
@@ -648,6 +841,11 @@ pub enum DataColumn {
     /// of country outlines).
     Geometry(Vec<Arc<Geometry>>),
 
+    /// Column of brushes — one `Arc<Brush>` per row. Enables per-row raw
+    /// fills (per-category gradient / image fills without a scale); raw
+    /// columns bypass scale machinery entirely.
+    Brush(Vec<Arc<Brush>>),
+
     /// Per-row factors of a consumer-defined base; see `Value::Relative`.
     /// Stored apart from `F64` so the factor can never leak into scale
     /// training as an absolute number.
@@ -671,6 +869,7 @@ impl DataColumn {
             DataColumn::Duration(v) => v.len(),
             DataColumn::Linetype(v) => v.len(),
             DataColumn::Geometry(v) => v.len(),
+            DataColumn::Brush(v) => v.len(),
             DataColumn::Relative(v) => v.len(),
         }
     }
@@ -699,6 +898,7 @@ impl DataColumn {
             DataColumn::Duration(v) => Value::Duration(v[i]),
             DataColumn::Linetype(v) => Value::Linetype(v[i].clone()),
             DataColumn::Geometry(v) => Value::Geometry(v[i].clone()),
+            DataColumn::Brush(v) => Value::Brush(v[i].clone()),
             DataColumn::Relative(v) => Value::Relative(v[i]),
         }
     }
@@ -753,6 +953,7 @@ impl DataColumn {
                         .all(|(x, y)| linetype_step_key_eq(x, y))
             }
             (Geometry(a), Geometry(b)) => Arc::ptr_eq(&a[i], &b[j]),
+            (Brush(a), Brush(b)) => Arc::ptr_eq(&a[i], &b[j]) || brush_key_eq(&a[i], &b[j]),
             (Relative(a), Relative(b)) => canonical_f64_bits(a[i]) == canonical_f64_bits(b[j]),
             _ => false,
         }
@@ -873,6 +1074,21 @@ impl From<Vec<Rel>> for DataColumn {
 impl From<Vec<Arc<Geometry>>> for DataColumn {
     fn from(v: Vec<Arc<Geometry>>) -> Self {
         DataColumn::Geometry(v)
+    }
+}
+
+// Brush columns. `Vec<Brush>` auto-wraps each row in an `Arc`;
+// `Vec<Arc<Brush>>` is the zero-copy fast path when the caller has
+// already arranged sharing (the common case: a handful of brushes
+// repeated across many rows).
+impl From<Vec<Brush>> for DataColumn {
+    fn from(v: Vec<Brush>) -> Self {
+        DataColumn::Brush(v.into_iter().map(Arc::new).collect())
+    }
+}
+impl From<Vec<Arc<Brush>>> for DataColumn {
+    fn from(v: Vec<Arc<Brush>>) -> Self {
+        DataColumn::Brush(v)
     }
 }
 
@@ -1365,5 +1581,156 @@ mod tests {
 
         assert_eq!(h_a.finish(), h_b.finish());
         assert_ne!(h_a.finish(), h_c.finish());
+    }
+
+    // ── Brushes ──
+
+    use crate::brush::{Extend, GradientKind, SweepGradientPosition};
+
+    fn test_gradient(offset: f32) -> Gradient {
+        Gradient::new_linear(
+            peniko::kurbo::Point::new(0.0, 0.0),
+            peniko::kurbo::Point::new(100.0, 0.0),
+        )
+        .with_stops([
+            (offset, Color::new([1.0, 0.0, 0.0, 1.0])),
+            (1.0, Color::new([0.0, 0.0, 1.0, 1.0])),
+        ])
+    }
+
+    fn test_image() -> ImageBrush {
+        ImageBrush::new(ImageData {
+            data: crate::brush::Blob::new(Arc::new(vec![255u8, 0, 0, 255])),
+            format: crate::brush::ImageFormat::Rgba8,
+            alpha_type: crate::brush::ImageAlphaType::Alpha,
+            width: 1,
+            height: 1,
+        })
+    }
+
+    #[test]
+    fn value_from_brush_family() {
+        let solid: Value = Brush::Solid(Color::new([1.0, 0.0, 0.0, 1.0])).into();
+        assert!(matches!(solid.as_brush(), Some(Brush::Solid(_))));
+
+        let grad: Value = test_gradient(0.0).into();
+        assert!(matches!(grad.as_brush(), Some(Brush::Gradient(_))));
+
+        let img: Value = test_image().into();
+        assert!(matches!(img.as_brush(), Some(Brush::Image(_))));
+
+        let arc: Value = Arc::new(Brush::Solid(Color::BLACK)).into();
+        assert!(arc.as_brush().is_some());
+    }
+
+    #[test]
+    fn brush_key_eq_solid_and_cross_family() {
+        let a = Value::from(Brush::Solid(Color::new([1.0, 0.0, 0.0, 1.0])));
+        let b = Value::from(Brush::Solid(Color::new([1.0, 0.0, 0.0, 1.0])));
+        let c = Value::from(Brush::Solid(Color::new([0.0, 1.0, 0.0, 1.0])));
+        assert!(a.key_eq(&b));
+        assert!(!a.key_eq(&c));
+        // Cross-family never compares equal, even for a matching color.
+        assert!(!a.key_eq(&Value::Color(Color::new([1.0, 0.0, 0.0, 1.0]))));
+        assert!(!a.key_eq(&Value::from(test_gradient(0.0))));
+    }
+
+    #[test]
+    fn brush_key_eq_gradient() {
+        let a = Value::from(test_gradient(0.0));
+        let b = Value::from(test_gradient(0.0));
+        let c = Value::from(test_gradient(0.25));
+        assert!(a.key_eq(&b));
+        assert!(!a.key_eq(&c));
+
+        // Extend is part of the key.
+        let mut g = test_gradient(0.0);
+        g.extend = Extend::Repeat;
+        assert!(!a.key_eq(&Value::from(g)));
+    }
+
+    #[test]
+    fn brush_key_eq_image() {
+        let a = Value::from(test_image());
+        let same_blob = match a.as_brush() {
+            Some(Brush::Image(i)) => i.image.data.clone(),
+            _ => unreachable!(),
+        };
+        let mut b_img = test_image();
+        b_img.image.data = same_blob;
+        assert!(a.key_eq(&Value::from(b_img)));
+
+        // A fresh Blob with identical bytes has a different id.
+        assert!(!a.key_eq(&Value::from(test_image())));
+    }
+
+    #[test]
+    fn brush_key_eq_arc_shortcut() {
+        let arc = Arc::new(Brush::Solid(Color::BLACK));
+        let a = Value::Brush(arc.clone());
+        let b = Value::Brush(arc);
+        assert!(a.key_eq(&b));
+    }
+
+    #[test]
+    fn brush_key_hash_consistency() {
+        use std::collections::hash_map::DefaultHasher;
+        let hash = |v: &Value| {
+            let mut h = DefaultHasher::new();
+            v.key_hash(&mut h);
+            h.finish()
+        };
+        let a = Value::from(test_gradient(0.0));
+        let b = Value::from(test_gradient(0.0));
+        let c = Value::from(test_gradient(0.25));
+        assert!(a.key_eq(&b));
+        assert_eq!(hash(&a), hash(&b));
+        assert_ne!(hash(&a), hash(&c));
+    }
+
+    #[test]
+    fn datacolumn_brush() {
+        let col: DataColumn = vec![
+            Brush::Solid(Color::BLACK),
+            Brush::Gradient(test_gradient(0.0)),
+        ]
+        .into();
+        assert!(matches!(col, DataColumn::Brush(_)));
+        assert_eq!(col.len(), 2);
+        assert!(matches!(col.get(0).as_brush(), Some(Brush::Solid(_))));
+
+        let same: DataColumn = vec![
+            Brush::Solid(Color::BLACK),
+            Brush::Gradient(test_gradient(0.0)),
+        ]
+        .into();
+        assert!(col.key_eq_at(0, &same, 0));
+        assert!(col.key_eq_at(1, &same, 1));
+        assert!(!col.key_eq_at(0, &same, 1));
+
+        let shared: DataColumn = vec![Arc::new(Brush::Solid(Color::WHITE))].into();
+        assert!(matches!(shared, DataColumn::Brush(_)));
+    }
+
+    #[test]
+    fn gradient_kind_discriminates() {
+        // A linear and a sweep gradient with zeroed coordinates must not
+        // compare equal just because the numbers line up.
+        let linear = Gradient::new_linear(
+            peniko::kurbo::Point::new(0.0, 0.0),
+            peniko::kurbo::Point::new(0.0, 0.0),
+        );
+        let sweep = Gradient {
+            kind: GradientKind::Sweep(SweepGradientPosition {
+                center: peniko::kurbo::Point::new(0.0, 0.0),
+                start_angle: 0.0,
+                end_angle: 0.0,
+            }),
+            ..Gradient::new_linear(
+                peniko::kurbo::Point::new(0.0, 0.0),
+                peniko::kurbo::Point::new(0.0, 0.0),
+            )
+        };
+        assert!(!Value::from(linear).key_eq(&Value::from(sweep)));
     }
 }

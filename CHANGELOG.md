@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Brush value type — plot fills can now be a gradient or an image
+  pattern, not only a solid color. A new `brush` module re-exports
+  peniko's brush vocabulary (`Brush`, `Gradient`, `ImageBrush`,
+  `GradientKind`, the position structs, `Extend`, `Blob`, and the
+  image enums) as shared styling vocabulary, the same role
+  `LinetypeStep` plays for dash patterns — consumers name the exact
+  type their scene API already accepts, with no boundary conversion.
+  `Value::Brush(Arc<Brush>)` carries it, with `as_brush()` and
+  `From<Brush>` / `From<Gradient>` / `From<ImageBrush>` /
+  `From<Arc<Brush>>`; `DataColumn::Brush(Vec<Arc<Brush>>)` enables
+  per-row raw fills (per-category gradient / image fills without a
+  scale). Brushes are opaque to scales: they flow through constant /
+  raw channels only, and a brush on a channel with a bound color
+  scale maps to `Null` — the same contract raw colors have today.
+  `Brush` is neither `Eq` nor `Hash`, so `brush_key_eq` /
+  `brush_key_hash` define the deterministic comparison (solids by
+  color components, gradients by kind coordinates + stops + extend +
+  interpolation fields, images by `Blob::id()` + dimensions/format/
+  alpha-type + sampler settings; `Arc::ptr_eq` is a fast path, as
+  with `Geometry`). `default_label` renders brushes as `None`, as it
+  does for linetypes and geometries. A data-driven brush scale
+  (`OutputRange` variant, gradient interpolation) is deliberately
+  deferred.
 - `BreakTarget::MaxSpacing` / `BreakTarget::MinSpacing` — spacing
   variants with a rounding direction, backing consumer syntax like
   "<40 pt" / ">40 pt". `MaxSpacing` resolves `axis_len / spacing` by

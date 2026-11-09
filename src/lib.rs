@@ -62,6 +62,7 @@
 
 pub mod break_target;
 pub mod breaks;
+pub mod brush;
 pub mod chrome;
 pub mod color;
 pub mod direction;
@@ -105,6 +106,7 @@ pub use breaks::{
     temporal_minor_breaks_datetime, temporal_minor_breaks_from_f64_with_interval,
     temporal_minor_breaks_time, CalendarUnit, TemporalInterval, DEFAULT_BREAK_COUNT,
 };
+pub use brush::{Brush, Gradient, ImageBrush};
 pub use chrome::{AxisSide, LegendSide};
 pub use direction::Direction;
 pub use geometry::{Coord, Geometry, ParseError as GeometryParseError, Polygon as GeometryPolygon};
