@@ -9,29 +9,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Brush value type — plot fills can now be a gradient or an image
-  pattern, not only a solid color. A new `brush` module re-exports
-  peniko's brush vocabulary (`Brush`, `Gradient`, `ImageBrush`,
-  `GradientKind`, the position structs, `Extend`, `Blob`, and the
-  image enums) as shared styling vocabulary, the same role
-  `LinetypeStep` plays for dash patterns — consumers name the exact
-  type their scene API already accepts, with no boundary conversion.
+- Brush value type — plot fills can now be a gradient, an image
+  pattern, or a vector fill pattern, not only a solid color. A new
+  `brush` module defines zygos's own `Brush` enum
+  (`Solid(Color) | Gradient(Gradient) | Image(ImageBrush) |
+  Pattern(Arc<FillPattern>)`) — peniko's `Brush` is closed and has no
+  pattern variant, so the first three variants wrap peniko's types
+  unchanged and `Brush::as_peniko()` hands them back as
+  `Option<peniko::Brush>` for scene APIs (the one boundary
+  conversion; `Pattern` converts to nothing — the consumer tiles it
+  itself). The module still re-exports peniko's paint vocabulary
+  (`Gradient`, `ImageBrush`, `GradientKind`, the position structs,
+  `Extend`, `Blob`, the image enums) plus kurbo's `Stroke`.
   `Value::Brush(Arc<Brush>)` carries it, with `as_brush()` and
   `From<Brush>` / `From<Gradient>` / `From<ImageBrush>` /
-  `From<Arc<Brush>>`; `DataColumn::Brush(Vec<Arc<Brush>>)` enables
-  per-row raw fills (per-category gradient / image fills without a
-  scale). Brushes are opaque to scales: they flow through constant /
-  raw channels only, and a brush on a channel with a bound color
-  scale maps to `Null` — the same contract raw colors have today.
-  `Brush` is neither `Eq` nor `Hash`, so `brush_key_eq` /
-  `brush_key_hash` define the deterministic comparison (solids by
-  color components, gradients by kind coordinates + stops + extend +
-  interpolation fields, images by `Blob::id()` + dimensions/format/
-  alpha-type + sampler settings; `Arc::ptr_eq` is a fast path, as
-  with `Geometry`). `default_label` renders brushes as `None`, as it
-  does for linetypes and geometries. A data-driven brush scale
+  `From<FillPattern>` / `From<Arc<Brush>>`; `DataColumn::Brush(Vec<Arc<Brush>>)`
+  enables per-row raw fills (per-category gradient / image / pattern
+  fills without a scale). Brushes are opaque to scales: they flow
+  through constant / raw channels only, and a brush on a channel
+  with a bound color scale maps to `Null` — the same contract raw
+  colors have today. `Brush` is neither `Eq` nor `Hash`, so
+  `Brush::key_eq` / `Brush::key_hash` define the deterministic
+  comparison (solids by color components, gradients by kind
+  coordinates + stops + extend + interpolation fields, images by
+  `Blob::id()` + dimensions/format/alpha-type + sampler settings,
+  patterns structurally via `pattern_key_eq`; `Arc::ptr_eq` is a
+  fast path, as with `Geometry`), with `brush_key_eq` /
+  `brush_key_hash` kept in `value.rs` as free-function shims.
+  `default_label` renders brushes as `None`, as it does for
+  linetypes and geometries. A data-driven brush scale
   (`OutputRange` variant, gradient interpolation) is deliberately
   deferred.
+- `FillPattern` — declarative vector fill patterns: a tile of
+  `PatternElement`s (`Path` / `Shape` / `Text`) repeated across a
+  fill region, in a new `patterns::fill` module. Pure vocabulary,
+  like `patterns::shape` — the consumer resolves shape names, shapes
+  text, and performs the tiling. The tiling is self-contained on the
+  value: mandatory `tile_rect` + `spacing` (elements may overflow
+  and clip against the tile, grid's pattern-viewport model) plus a
+  `transform: Affine` (default identity via `FillPattern::new`, with
+  a `with_transform` builder), so the consumer needs no external
+  placement state. All element sizes are unitless multiples of
+  `tile_rect` height (text included) — the `LinetypeStep`
+  line-width convention applied to a whole tile, so a pattern scales
+  as one coherent drawing. `pattern_key_eq` / `pattern_key_hash`
+  provide the NaN / -0-canonicalised structural comparison.
+  `fill_pattern(name, brush)` resolves a small built-in
+  nomenclature — `stripe` / `stripe-dense` / `stripe-sparse`,
+  `crosshatch`, `circle`, `dot` — the way `linetype_pattern`
+  resolves dash names: geometry in a unit tile, caller-supplied
+  paint, no pattern scale.
 - `BreakTarget::MaxSpacing` / `BreakTarget::MinSpacing` — spacing
   variants with a rounding direction, backing consumer syntax like
   "<40 pt" / ">40 pt". `MaxSpacing` resolves `axis_len / spacing` by

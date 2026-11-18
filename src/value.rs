@@ -25,9 +25,10 @@
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use crate::brush::{Brush, Gradient, GradientKind, ImageBrush, ImageData, ImageSampler};
+use crate::brush::{Brush, Gradient, ImageBrush};
 use crate::color::Color;
 use crate::geometry::Geometry;
+use crate::patterns::fill::FillPattern;
 
 // ─── Temporal newtypes ───────────────────────────────────────────────────────
 
@@ -312,9 +313,10 @@ pub enum Value {
     /// maps each coordinate through bound x/y scales.
     Geometry(Arc<Geometry>),
 
-    /// A paint brush — solid color, gradient, or image pattern (see
-    /// [`crate::brush`]). Carried by `Arc` so cloning a column of brushes
-    /// does not duplicate per-row image buffers. Opaque to scales:
+    /// A paint brush — solid color, gradient, image pattern, or vector
+    /// fill pattern (see [`crate::brush`]). Carried by `Arc` so cloning a
+    /// column of brushes does not duplicate per-row image buffers or
+    /// pattern definitions. Opaque to scales:
     /// brushes flow through constant / raw channels, which either bypass
     /// scales or pass values through untouched; no scale type maps
     /// *to* a brush yet.
@@ -461,7 +463,7 @@ impl Value {
             (Geometry(a), Geometry(b)) => Arc::ptr_eq(a, b),
             // Pointer identity is a shortcut for value equality; unequal
             // pointers fall through to structural comparison.
-            (Brush(a), Brush(b)) => Arc::ptr_eq(a, b) || brush_key_eq(a, b),
+            (Brush(a), Brush(b)) => Arc::ptr_eq(a, b) || a.key_eq(b),
             (Relative(a), Relative(b)) => canonical_f64_bits(*a) == canonical_f64_bits(*b),
             _ => false,
         }
@@ -503,7 +505,7 @@ impl Value {
             Value::Brush(b) => {
                 // Structural hash — consistent with `key_eq`, where
                 // pointer-equal brushes are also structurally equal.
-                brush_key_hash(b, state);
+                b.key_hash(state);
             }
             Value::Relative(f) => canonical_f64_bits(*f).hash(state),
         }
@@ -532,140 +534,16 @@ pub fn linetype_step_key_hash<H: Hasher>(step: &LinetypeStep, state: &mut H) {
     }
 }
 
-/// Structural equality for [`Brush`]es (peniko's `Brush` is neither `Eq`
-/// nor `Hash`). Solids compare by color; gradients by kind coordinates,
-/// stops (canonical f32 bits, same as `Color`), extend, and interpolation
-/// parameters; images by [`Blob`](crate::brush::Blob) id plus dimensions,
-/// format, alpha type, and sampler settings. NaN / -0 are canonicalised
-/// in every float comparison.
+/// Structural equality for [`Brush`]es. Thin shim over
+/// [`Brush::key_eq`], kept for callers that prefer a free function.
 pub fn brush_key_eq(a: &Brush, b: &Brush) -> bool {
-    match (a, b) {
-        (Brush::Solid(x), Brush::Solid(y)) => x == y,
-        (Brush::Gradient(x), Brush::Gradient(y)) => gradient_key_eq(x, y),
-        (Brush::Image(x), Brush::Image(y)) => image_key_eq(x, y),
-        _ => false,
-    }
+    a.key_eq(b)
 }
 
-/// Deterministic hash for a [`Brush`]. Mirrors [`brush_key_eq`].
+/// Deterministic hash for a [`Brush`]. Thin shim over
+/// [`Brush::key_hash`].
 pub fn brush_key_hash<H: Hasher>(brush: &Brush, state: &mut H) {
-    std::mem::discriminant(brush).hash(state);
-    match brush {
-        Brush::Solid(c) => {
-            let [r, g, b, a] = c.components;
-            canonical_f32_bits(r).hash(state);
-            canonical_f32_bits(g).hash(state);
-            canonical_f32_bits(b).hash(state);
-            canonical_f32_bits(a).hash(state);
-        }
-        Brush::Gradient(g) => gradient_key_hash(g, state),
-        Brush::Image(i) => image_key_hash(i, state),
-    }
-}
-
-fn gradient_key_eq(a: &Gradient, b: &Gradient) -> bool {
-    fn point_eq(a: peniko::kurbo::Point, b: peniko::kurbo::Point) -> bool {
-        canonical_f64_bits(a.x) == canonical_f64_bits(b.x)
-            && canonical_f64_bits(a.y) == canonical_f64_bits(b.y)
-    }
-    let kind_eq = match (&a.kind, &b.kind) {
-        (GradientKind::Linear(x), GradientKind::Linear(y)) => {
-            point_eq(x.start, y.start) && point_eq(x.end, y.end)
-        }
-        (GradientKind::Radial(x), GradientKind::Radial(y)) => {
-            point_eq(x.start_center, y.start_center)
-                && point_eq(x.end_center, y.end_center)
-                && canonical_f32_bits(x.start_radius) == canonical_f32_bits(y.start_radius)
-                && canonical_f32_bits(x.end_radius) == canonical_f32_bits(y.end_radius)
-        }
-        (GradientKind::Sweep(x), GradientKind::Sweep(y)) => {
-            point_eq(x.center, y.center)
-                && canonical_f32_bits(x.start_angle) == canonical_f32_bits(y.start_angle)
-                && canonical_f32_bits(x.end_angle) == canonical_f32_bits(y.end_angle)
-        }
-        _ => false,
-    };
-    kind_eq
-        && a.extend == b.extend
-        && a.interpolation_cs == b.interpolation_cs
-        && a.hue_direction == b.hue_direction
-        && a.interpolation_alpha_space == b.interpolation_alpha_space
-        && a.stops.len() == b.stops.len()
-        && a.stops.iter().zip(b.stops.iter()).all(|(x, y)| {
-            canonical_f32_bits(x.offset) == canonical_f32_bits(y.offset)
-                && x.color.cs == y.color.cs
-                && x.color
-                    .components
-                    .iter()
-                    .zip(y.color.components.iter())
-                    .all(|(u, v)| canonical_f32_bits(*u) == canonical_f32_bits(*v))
-        })
-}
-
-fn gradient_key_hash<H: Hasher>(g: &Gradient, state: &mut H) {
-    fn point_hash<H: Hasher>(p: peniko::kurbo::Point, state: &mut H) {
-        canonical_f64_bits(p.x).hash(state);
-        canonical_f64_bits(p.y).hash(state);
-    }
-    std::mem::discriminant(&g.kind).hash(state);
-    match &g.kind {
-        GradientKind::Linear(l) => {
-            point_hash(l.start, state);
-            point_hash(l.end, state);
-        }
-        GradientKind::Radial(r) => {
-            point_hash(r.start_center, state);
-            point_hash(r.end_center, state);
-            canonical_f32_bits(r.start_radius).hash(state);
-            canonical_f32_bits(r.end_radius).hash(state);
-        }
-        GradientKind::Sweep(s) => {
-            point_hash(s.center, state);
-            canonical_f32_bits(s.start_angle).hash(state);
-            canonical_f32_bits(s.end_angle).hash(state);
-        }
-    }
-    std::mem::discriminant(&g.extend).hash(state);
-    std::mem::discriminant(&g.interpolation_cs).hash(state);
-    std::mem::discriminant(&g.hue_direction).hash(state);
-    std::mem::discriminant(&g.interpolation_alpha_space).hash(state);
-    (g.stops.len() as u64).hash(state);
-    for stop in g.stops.iter() {
-        canonical_f32_bits(stop.offset).hash(state);
-        std::mem::discriminant(&stop.color.cs).hash(state);
-        for c in stop.color.components {
-            canonical_f32_bits(c).hash(state);
-        }
-    }
-}
-
-fn image_key_eq(a: &ImageBrush, b: &ImageBrush) -> bool {
-    fn data_eq(a: &ImageData, b: &ImageData) -> bool {
-        a.data.id() == b.data.id()
-            && a.format == b.format
-            && a.alpha_type == b.alpha_type
-            && a.width == b.width
-            && a.height == b.height
-    }
-    fn sampler_eq(a: &ImageSampler, b: &ImageSampler) -> bool {
-        a.x_extend == b.x_extend
-            && a.y_extend == b.y_extend
-            && a.quality == b.quality
-            && canonical_f32_bits(a.alpha) == canonical_f32_bits(b.alpha)
-    }
-    data_eq(&a.image, &b.image) && sampler_eq(&a.sampler, &b.sampler)
-}
-
-fn image_key_hash<H: Hasher>(i: &ImageBrush, state: &mut H) {
-    i.image.data.id().hash(state);
-    std::mem::discriminant(&i.image.format).hash(state);
-    std::mem::discriminant(&i.image.alpha_type).hash(state);
-    i.image.width.hash(state);
-    i.image.height.hash(state);
-    std::mem::discriminant(&i.sampler.x_extend).hash(state);
-    std::mem::discriminant(&i.sampler.y_extend).hash(state);
-    std::mem::discriminant(&i.sampler.quality).hash(state);
-    canonical_f32_bits(i.sampler.alpha).hash(state);
+    brush.key_hash(state);
 }
 
 // `From<T> for Value` for the common scalar inputs.
@@ -755,6 +633,16 @@ impl From<Gradient> for Value {
 impl From<ImageBrush> for Value {
     fn from(i: ImageBrush) -> Self {
         Value::Brush(Arc::new(Brush::Image(i)))
+    }
+}
+impl From<FillPattern> for Value {
+    fn from(p: FillPattern) -> Self {
+        Value::Brush(Arc::new(Brush::Pattern(Arc::new(p))))
+    }
+}
+impl From<Arc<FillPattern>> for Value {
+    fn from(p: Arc<FillPattern>) -> Self {
+        Value::Brush(Arc::new(Brush::Pattern(p)))
     }
 }
 impl From<Arc<Brush>> for Value {
@@ -953,7 +841,7 @@ impl DataColumn {
                         .all(|(x, y)| linetype_step_key_eq(x, y))
             }
             (Geometry(a), Geometry(b)) => Arc::ptr_eq(&a[i], &b[j]),
-            (Brush(a), Brush(b)) => Arc::ptr_eq(&a[i], &b[j]) || brush_key_eq(&a[i], &b[j]),
+            (Brush(a), Brush(b)) => Arc::ptr_eq(&a[i], &b[j]) || a[i].key_eq(&b[j]),
             (Relative(a), Relative(b)) => canonical_f64_bits(a[i]) == canonical_f64_bits(b[j]),
             _ => false,
         }
@@ -1096,7 +984,7 @@ impl From<Vec<Arc<Brush>>> for DataColumn {
 
 /// Canonicalise an `f64` bit pattern for deterministic equality / hashing:
 /// every NaN maps to a single canonical NaN; `-0.0` maps to `0.0`.
-fn canonical_f64_bits(n: f64) -> u64 {
+pub(crate) fn canonical_f64_bits(n: f64) -> u64 {
     if n.is_nan() {
         f64::NAN.to_bits()
     } else if n == 0.0 {
@@ -1106,7 +994,7 @@ fn canonical_f64_bits(n: f64) -> u64 {
     }
 }
 
-fn canonical_f32_bits(n: f32) -> u32 {
+pub(crate) fn canonical_f32_bits(n: f32) -> u32 {
     if n.is_nan() {
         f32::NAN.to_bits()
     } else if n == 0.0 {
@@ -1599,7 +1487,7 @@ mod tests {
     }
 
     fn test_image() -> ImageBrush {
-        ImageBrush::new(ImageData {
+        ImageBrush::new(crate::brush::ImageData {
             data: crate::brush::Blob::new(Arc::new(vec![255u8, 0, 0, 255])),
             format: crate::brush::ImageFormat::Rgba8,
             alpha_type: crate::brush::ImageAlphaType::Alpha,

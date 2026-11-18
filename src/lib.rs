@@ -115,6 +115,7 @@ pub use label::{default_label, shared_precision, LabelSpec, Placeholder, Templat
 pub use locale::Locale;
 pub use oob::OobPolicy;
 pub use output::OutputRange;
+pub use patterns::fill::{pattern_key_eq, pattern_key_hash, FillPattern, PatternElement};
 pub use scale_type::{
     binned_band_width, binned_band_width_at, binned_breaks, binned_map, binned_map_break,
     continuous_breaks, continuous_breaks_with_target, continuous_map, continuous_minor_breaks,
