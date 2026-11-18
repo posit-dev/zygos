@@ -44,23 +44,54 @@ pub struct FillPattern {
     pub transform: Affine,
 }
 
+/// What a pattern element is painted with.
+///
+/// The same indirection [`patterns::shape`](crate::patterns::shape)'s
+/// `ShapeStyle` plays: zygos carries the *role*, the consumer binds the
+/// paint. Roles are bound before the scene boundary — backends only ever
+/// see fully-bound patterns and never learn roles exist.
+#[derive(Clone, Debug)]
+pub enum PatternPaint {
+    /// The primary paint the consumer supplies — typically its fill
+    /// channel's resolved brush. The natural default for hand-written
+    /// elements.
+    Foreground,
+    /// The secondary paint the consumer supplies, conventionally a
+    /// backdrop behind the foreground strokes; consumers commonly
+    /// default it to transparent.
+    Background,
+    /// Paint fixed by the pattern itself, for genuinely colored tiles
+    /// (a flag stamp, a logo) that must keep per-element paint.
+    Fixed(Brush),
+}
+
+impl From<Brush> for PatternPaint {
+    fn from(b: Brush) -> Self {
+        PatternPaint::Fixed(b)
+    }
+}
+
 /// One drawable element of a pattern tile. All sizes are unitless
 /// multiples of the tile height — `size: 0.8` means 80% of
 /// [`FillPattern::tile_rect`] height, so text legibility is the tile
 /// author's choice, made indirectly through the tile size. Consumers
 /// wanting an absolute pt size compute the fraction themselves (a 9pt
 /// stamp in an 18pt tile is `size: 0.5`).
+///
+/// Paint is a [`PatternPaint`] role; a `Background` element is legal on
+/// any variant (e.g. a shape stamped in the backdrop color).
 #[derive(Clone, Debug)]
 pub enum PatternElement {
     /// Filled and/or stroked path geometry, like `patterns::shape`.
     Path {
         /// The geometry, in tile coordinates.
         path: BezPath,
-        /// Fill paint, if any.
-        fill: Option<Brush>,
+        /// Fill paint, if any (`None` = not filled, orthogonal to *how*
+        /// it is painted).
+        fill: Option<PatternPaint>,
         /// Stroke style and paint, if any. Boxed to keep the enum small
         /// (`Stroke` + `Brush` outweigh the other variants combined).
-        stroke: Option<Box<(Stroke, Brush)>>,
+        stroke: Option<Box<(Stroke, PatternPaint)>>,
     },
     /// A named shape stamped at a point — the same indirection as
     /// `LinetypeStep::Marker`; the consumer resolves the name against
@@ -73,7 +104,7 @@ pub enum PatternElement {
         /// Shape size, as a multiple of tile height.
         size: f64,
         /// Paint for the shape.
-        brush: Brush,
+        paint: PatternPaint,
     },
     /// A text stamp: the string and its style *names*, not shaped glyphs.
     /// The consumer shapes; zygos never measures anything.
@@ -87,7 +118,7 @@ pub enum PatternElement {
         /// Font family name; `None` = consumer default.
         family: Option<Arc<str>>,
         /// Paint for the glyphs.
-        brush: Brush,
+        paint: PatternPaint,
     },
 }
 
@@ -122,7 +153,7 @@ impl FillPattern {
 // pattern scale yet: these exist so consumers resolve the same names to
 // the same tilings.
 
-/// Resolve a named fill pattern, painted with `brush`.
+/// Resolve a named fill pattern, painted with `paint`.
 ///
 /// Names (case-insensitive):
 /// - `"stripe"` / `"stripe-dense"` / `"stripe-sparse"` — diagonal lines at
@@ -132,61 +163,73 @@ impl FillPattern {
 ///   [`patterns::shape`](crate::patterns::shape)).
 /// - `"dot"` — a small circle per tile.
 ///
-/// Line patterns stroke with `brush`; shape patterns fill with it.
-/// All geometry lives in a unit tile (`Rect::new(0., 0., 1., 1.)`), with
-/// line widths and shape sizes as multiples of tile height per the
-/// module convention. Returns `None` for unknown names.
-pub fn fill_pattern(name: &str, brush: Brush) -> Option<FillPattern> {
-    fn line(x0: f64, y0: f64, x1: f64, y1: f64, width: f64, brush: &Brush) -> PatternElement {
+/// Every element carries the one supplied [`PatternPaint`]: pass a
+/// `Brush` (wrapped in [`PatternPaint::Fixed`] via `Into`) for a
+/// self-colored definition, or `PatternPaint::Foreground` /
+/// `Background` for a consumer-colored one. Line patterns stroke with
+/// it; shape patterns fill with it. All geometry lives in a unit tile
+/// (`Rect::new(0., 0., 1., 1.)`), with line widths and shape sizes as
+/// multiples of tile height per the module convention. Returns `None`
+/// for unknown names.
+pub fn fill_pattern(name: &str, paint: impl Into<PatternPaint>) -> Option<FillPattern> {
+    let paint = paint.into();
+    fn line(
+        x0: f64,
+        y0: f64,
+        x1: f64,
+        y1: f64,
+        width: f64,
+        paint: &PatternPaint,
+    ) -> PatternElement {
         let mut path = BezPath::new();
         path.move_to((x0, y0));
         path.line_to((x1, y1));
         PatternElement::Path {
             path,
             fill: None,
-            stroke: Some(Box::new((Stroke::new(width), brush.clone()))),
+            stroke: Some(Box::new((Stroke::new(width), paint.clone()))),
         }
     }
     // Stripes are horizontal lines; the 45° rotation rides on the
     // pattern's transform, so the tiling stays axis-aligned and seamless
     // (the line sits on the tile edge shared with the next row).
-    let stripe = |spacing: f64, brush: &Brush| {
+    let stripe = |spacing: f64, paint: &PatternPaint| {
         FillPattern::new(
-            vec![line(0.0, 0.0, 1.0, 0.0, 0.125, brush)],
+            vec![line(0.0, 0.0, 1.0, 0.0, 0.125, paint)],
             Rect::new(0.0, 0.0, 1.0, 1.0),
             Vec2::new(spacing, spacing),
         )
         .with_transform(Affine::rotate(std::f64::consts::FRAC_PI_4))
     };
-    let shape = |shape_name: &str, size: f64, brush: &Brush| {
+    let shape = |shape_name: &str, size: f64, paint: &PatternPaint| {
         FillPattern::new(
             vec![PatternElement::Shape {
                 name: Arc::from(shape_name),
                 at: Point::new(0.5, 0.5),
                 size,
-                brush: brush.clone(),
+                paint: paint.clone(),
             }],
             Rect::new(0.0, 0.0, 1.0, 1.0),
             Vec2::new(1.0, 1.0),
         )
     };
     match name.to_lowercase().as_str() {
-        "stripe" => Some(stripe(1.0, &brush)),
-        "stripe-dense" => Some(stripe(0.5, &brush)),
-        "stripe-sparse" => Some(stripe(2.0, &brush)),
+        "stripe" => Some(stripe(1.0, &paint)),
+        "stripe-dense" => Some(stripe(0.5, &paint)),
+        "stripe-sparse" => Some(stripe(2.0, &paint)),
         "crosshatch" => Some(
             FillPattern::new(
                 vec![
-                    line(0.0, 0.0, 1.0, 0.0, 0.125, &brush),
-                    line(0.0, 0.0, 0.0, 1.0, 0.125, &brush),
+                    line(0.0, 0.0, 1.0, 0.0, 0.125, &paint),
+                    line(0.0, 0.0, 0.0, 1.0, 0.125, &paint),
                 ],
                 Rect::new(0.0, 0.0, 1.0, 1.0),
                 Vec2::new(1.0, 1.0),
             )
             .with_transform(Affine::rotate(std::f64::consts::FRAC_PI_4)),
         ),
-        "circle" => Some(shape("circle", 0.5, &brush)),
-        "dot" => Some(shape("circle", 0.125, &brush)),
+        "circle" => Some(shape("circle", 0.5, &paint)),
+        "dot" => Some(shape("circle", 0.125, &paint)),
         _ => None,
     }
 }
@@ -243,10 +286,10 @@ fn element_key_eq(a: &PatternElement, b: &PatternElement) -> bool {
     fn point_eq(x: &Point, y: &Point) -> bool {
         f64_eq(x.x, y.x) && f64_eq(x.y, y.y)
     }
-    fn opt_brush_eq(x: &Option<Brush>, y: &Option<Brush>) -> bool {
+    fn opt_paint_eq(x: &Option<PatternPaint>, y: &Option<PatternPaint>) -> bool {
         match (x, y) {
             (None, None) => true,
-            (Some(u), Some(v)) => u.key_eq(v),
+            (Some(u), Some(v)) => paint_key_eq(u, v),
             _ => false,
         }
     }
@@ -277,10 +320,10 @@ fn element_key_eq(a: &PatternElement, b: &PatternElement) -> bool {
             },
         ) => {
             path_key_eq(pa, pb)
-                && opt_brush_eq(fa, fb)
+                && opt_paint_eq(fa, fb)
                 && match (sa, sb) {
                     (None, None) => true,
-                    (Some(sa), Some(sb)) => stroke_eq(&sa.0, &sb.0) && sa.1.key_eq(&sb.1),
+                    (Some(sa), Some(sb)) => stroke_eq(&sa.0, &sb.0) && paint_key_eq(&sa.1, &sb.1),
                     _ => false,
                 }
         }
@@ -289,31 +332,33 @@ fn element_key_eq(a: &PatternElement, b: &PatternElement) -> bool {
                 name: na,
                 at: aa,
                 size: sa,
-                brush: ba,
+                paint: ba,
             },
             PatternElement::Shape {
                 name: nb,
                 at: ab,
                 size: sb,
-                brush: bb,
+                paint: bb,
             },
-        ) => **na == **nb && point_eq(aa, ab) && f64_eq(*sa, *sb) && ba.key_eq(bb),
+        ) => **na == **nb && point_eq(aa, ab) && f64_eq(*sa, *sb) && paint_key_eq(ba, bb),
         (
             PatternElement::Text {
                 content: ca,
                 at: aa,
                 size: sa,
                 family: fa,
-                brush: ba,
+                paint: ba,
             },
             PatternElement::Text {
                 content: cb,
                 at: ab,
                 size: sb,
                 family: fb,
-                brush: bb,
+                paint: bb,
             },
-        ) => **ca == **cb && point_eq(aa, ab) && f64_eq(*sa, *sb) && fa == fb && ba.key_eq(bb),
+        ) => {
+            **ca == **cb && point_eq(aa, ab) && f64_eq(*sa, *sb) && fa == fb && paint_key_eq(ba, bb)
+        }
         _ => false,
     }
 }
@@ -340,39 +385,60 @@ fn element_key_hash<H: Hasher>(el: &PatternElement, state: &mut H) {
         PatternElement::Path { path, fill, stroke } => {
             path_key_hash(path, state);
             fill.is_some().hash(state);
-            if let Some(b) = fill {
-                b.key_hash(state);
+            if let Some(p) = fill {
+                paint_key_hash(p, state);
             }
             stroke.is_some().hash(state);
             if let Some(sb) = stroke {
                 stroke_hash(&sb.0, state);
-                sb.1.key_hash(state);
+                paint_key_hash(&sb.1, state);
             }
         }
         PatternElement::Shape {
             name,
             at,
             size,
-            brush,
+            paint,
         } => {
             (**name).hash(state);
             point_hash(at, state);
             canonical_f64_bits(*size).hash(state);
-            brush.key_hash(state);
+            paint_key_hash(paint, state);
         }
         PatternElement::Text {
             content,
             at,
             size,
             family,
-            brush,
+            paint,
         } => {
             (**content).hash(state);
             point_hash(at, state);
             canonical_f64_bits(*size).hash(state);
             family.hash(state);
-            brush.key_hash(state);
+            paint_key_hash(paint, state);
         }
+    }
+}
+
+/// Structural equality for [`PatternPaint`]: roles by discriminant,
+/// `Fixed` by [`Brush::key_eq`]. Note a `Foreground` element and a
+/// `Fixed` element that a consumer would bind identically still compare
+/// unequal — the key describes the *definition*, not the resolution.
+fn paint_key_eq(a: &PatternPaint, b: &PatternPaint) -> bool {
+    match (a, b) {
+        (PatternPaint::Foreground, PatternPaint::Foreground) => true,
+        (PatternPaint::Background, PatternPaint::Background) => true,
+        (PatternPaint::Fixed(x), PatternPaint::Fixed(y)) => x.key_eq(y),
+        _ => false,
+    }
+}
+
+/// Deterministic hash for [`PatternPaint`]. Mirrors [`paint_key_eq`].
+fn paint_key_hash<H: Hasher>(p: &PatternPaint, state: &mut H) {
+    std::mem::discriminant(p).hash(state);
+    if let PatternPaint::Fixed(b) = p {
+        b.key_hash(state);
     }
 }
 
@@ -488,6 +554,34 @@ mod tests {
         assert!(!pattern_key_eq(&circle, &dot));
     }
 
+    #[test]
+    fn roles_compare_by_discriminant_not_resolution() {
+        let fixed = fill_pattern("stripe", Brush::Solid(Color::BLACK)).unwrap();
+        let foreground = fill_pattern("stripe", PatternPaint::Foreground).unwrap();
+        let background = fill_pattern("stripe", PatternPaint::Background).unwrap();
+        // Same geometry, different paint roles → different definitions,
+        // even where a consumer would bind Foreground to black.
+        assert!(!pattern_key_eq(&fixed, &foreground));
+        assert!(!pattern_key_eq(&foreground, &background));
+        assert!(pattern_key_eq(
+            &foreground,
+            &fill_pattern("stripe", PatternPaint::Foreground).unwrap()
+        ));
+
+        // Hash consistency across the role forms.
+        use std::collections::hash_map::DefaultHasher;
+        let hash = |p: &FillPattern| {
+            let mut h = DefaultHasher::new();
+            pattern_key_hash(p, &mut h);
+            h.finish()
+        };
+        assert_eq!(
+            hash(&foreground),
+            hash(&fill_pattern("stripe", PatternPaint::Foreground).unwrap())
+        );
+        assert_ne!(hash(&fixed), hash(&foreground));
+    }
+
     fn stripe(transform: Affine) -> FillPattern {
         let mut path = BezPath::new();
         path.move_to((0.0, 0.0));
@@ -496,7 +590,10 @@ mod tests {
             vec![PatternElement::Path {
                 path,
                 fill: None,
-                stroke: Some(Box::new((Stroke::new(0.1), Brush::Solid(Color::BLACK)))),
+                stroke: Some(Box::new((
+                    Stroke::new(0.1),
+                    PatternPaint::Fixed(Brush::Solid(Color::BLACK)),
+                ))),
             }],
             Rect::new(0.0, 0.0, 1.0, 1.0),
             Vec2::new(1.0, 1.0),
@@ -540,7 +637,7 @@ mod tests {
             at: Point::new(0.5, 0.5),
             size: s,
             family: None,
-            brush: Brush::Solid(Color::BLACK),
+            paint: PatternPaint::Fixed(Brush::Solid(Color::BLACK)),
         };
         assert!(element_key_eq(&text(0.8), &text(0.8)));
         assert!(!element_key_eq(&text(0.8), &text(0.5)));
@@ -549,7 +646,7 @@ mod tests {
             name: Arc::from(n),
             at: Point::new(0.0, 0.0),
             size: 0.5,
-            brush: Brush::Solid(Color::BLACK),
+            paint: PatternPaint::Fixed(Brush::Solid(Color::BLACK)),
         };
         assert!(element_key_eq(&shape("circle"), &shape("circle")));
         assert!(!element_key_eq(&shape("circle"), &shape("square")));
@@ -563,7 +660,7 @@ mod tests {
                     name: Arc::from("circle"),
                     at: Point::new(x, 0.0),
                     size: 0.5,
-                    brush: Brush::Solid(Color::BLACK),
+                    paint: PatternPaint::Fixed(Brush::Solid(Color::BLACK)),
                 }],
                 Rect::new(0.0, 0.0, 1.0, 1.0),
                 Vec2::new(1.0, 1.0),

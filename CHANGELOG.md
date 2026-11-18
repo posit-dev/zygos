@@ -54,11 +54,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line-width convention applied to a whole tile, so a pattern scales
   as one coherent drawing. `pattern_key_eq` / `pattern_key_hash`
   provide the NaN / -0-canonicalised structural comparison.
-  `fill_pattern(name, brush)` resolves a small built-in
+  Element paint is a `PatternPaint` role (`Foreground` /
+  `Background` / `Fixed(Brush)`) — the same indirection as
+  `patterns::shape`'s `ShapeStyle`: the definition carries the
+  role, the consumer binds the paint before the scene boundary, so
+  one shared definition serves every row while `Fixed` keeps
+  genuinely multi-colored tiles expressible.
+  `fill_pattern(name, paint)` resolves a small built-in
   nomenclature — `stripe` / `stripe-dense` / `stripe-sparse`,
   `crosshatch`, `circle`, `dot` — the way `linetype_pattern`
-  resolves dash names: geometry in a unit tile, caller-supplied
-  paint, no pattern scale.
+  resolves dash names: geometry in a unit tile, no pattern scale.
+  It takes `impl Into<PatternPaint>`: a `Brush` wraps as `Fixed`,
+  or pass a role for the consumer-colored form.
 - `BreakTarget::MaxSpacing` / `BreakTarget::MinSpacing` — spacing
   variants with a rounding direction, backing consumer syntax like
   "<40 pt" / ">40 pt". `MaxSpacing` resolves `axis_len / spacing` by
